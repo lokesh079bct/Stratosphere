@@ -22,7 +22,7 @@ Before proceeding, ensure the following dependencies are installed:
 ## 🔧 Clone the Repository
 
 ```bash
-git clone https://github.com/YourOrganization/Stratosphere.git
+git clone https://github.com/SujalMainali/Stratosphere.git
 cd Stratosphere
 
 ## Generate Build Files
