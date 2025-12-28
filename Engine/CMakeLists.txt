@@ -46,8 +46,10 @@ add_library(Engine STATIC
     src/SwapChain.cpp
     src/Renderer.cpp
     src/TrianglesRenderPassModule.cpp
+    src/MeshRenderPassModule.cpp
     src/Pipeline.cpp
     src/BufferUtils.cpp
+    src/SMeshLoader.cpp
     # add other engine sources here...
 )
 
@@ -79,3 +81,5 @@ endif()
 
 # Expose a usage requirement to consumers (e.g., to include Engine include dir)
 target_compile_features(Engine PUBLIC cxx_std_17)
+
+add_subdirectory(tools/ObjToSmesh)
