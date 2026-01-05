@@ -209,26 +209,6 @@ static bool convertObjToSMesh(const fs::path &objPath, const fs::path &outPath)
     float aabbMin[3], aabbMax[3];
     computeAABB(vertices, aabbMin, aabbMax);
 
-    const float cx = 0.5f * (aabbMin[0] + aabbMax[0]);
-    const float cy = 0.5f * (aabbMin[1] + aabbMax[1]);
-    const float cz = 0.5f * (aabbMin[2] + aabbMax[2]);
-    const float ex = (aabbMax[0] - aabbMin[0]);
-    const float ey = (aabbMax[1] - aabbMin[1]);
-    const float ez = (aabbMax[2] - aabbMin[2]);
-    float halfMaxExtent = 0.5f * std::max({ex, ey, ez});
-    if (halfMaxExtent < 1e-8f)
-        halfMaxExtent = 1.0f;
-
-    for (auto &v : vertices)
-    {
-        v.px = (v.px - cx) / halfMaxExtent;
-        v.py = (v.py - cy) / halfMaxExtent;
-        v.pz = (v.pz - cz) / halfMaxExtent;
-    }
-
-    // Recompute AABB in normalized space for the cooked file.
-    computeAABB(vertices, aabbMin, aabbMax);
-
     Engine::SMeshHeaderV0 hdr{};
     hdr.vertexCount = static_cast<uint32_t>(vertices.size());
     hdr.indexCount = static_cast<uint32_t>(indices.size());

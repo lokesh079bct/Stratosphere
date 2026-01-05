@@ -1,0 +1,218 @@
+#pragma once
+/*
+  Components.h
+  ------------
+  Purpose:
+    - Define component data structures (Position, Velocity, Health).
+    - Provide ComponentRegistry for name <-> ID mapping (data-driven).
+    - Provide ComponentMask: dynamic bitset keyed by component IDs.
+
+  Usage:
+    - ComponentRegistry gives stable numeric IDs for component names defined in JSON.
+    - ComponentMask builds signatures using those IDs to represent an entity/archetype's component set.
+*/
+
+#include <cstdint>
+#include <vector>
+#include <string>
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
+#include <unordered_map>
+
+namespace Engine::ECS
+{
+    // -----------------------
+    // Component Data Types
+    // -----------------------
+
+    // Spatial position in world space.
+    struct Position
+    {
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+    };
+
+    // Linear velocity (units per second), world space.
+    struct Velocity
+    {
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+    };
+
+    // Simple health component.
+    struct Health
+    {
+        float value = 100.0f;
+    };
+
+    // -----------------------
+    // Component Registry
+    // -----------------------
+    // Maps component names (e.g., "Position") to stable numeric IDs, and vice versa.
+    // This enables data-driven JSON to refer to components by name while the engine uses compact IDs.
+    class ComponentRegistry
+    {
+    public:
+        static constexpr uint32_t InvalidID = UINT32_MAX;
+
+        // Register a component name and return its stable ID.
+        // If already registered, returns the existing ID.
+        uint32_t registerComponent(const std::string &name)
+        {
+            auto it = m_nameToId.find(name);
+            if (it != m_nameToId.end())
+                return it->second;
+
+            const uint32_t id = static_cast<uint32_t>(m_idToName.size());
+            m_nameToId.emplace(name, id);
+            m_idToName.emplace_back(name);
+            return id;
+        }
+
+        // Get ID by name; returns InvalidID if not found.
+        uint32_t getId(const std::string &name) const
+        {
+            auto it = m_nameToId.find(name);
+            return (it != m_nameToId.end()) ? it->second : InvalidID;
+        }
+
+        // Ensure a name exists; if missing, register it and return the new ID.
+        uint32_t ensureId(const std::string &name)
+        {
+            auto it = m_nameToId.find(name);
+            if (it != m_nameToId.end())
+                return it->second;
+            return registerComponent(name);
+        }
+
+        // Get name by ID; returns empty string if invalid.
+        const std::string &getName(uint32_t id) const
+        {
+            static const std::string empty{};
+            return (id < m_idToName.size()) ? m_idToName[id] : empty;
+        }
+
+        // Total number of registered components.
+        uint32_t count() const { return static_cast<uint32_t>(m_idToName.size()); }
+
+    private:
+        std::unordered_map<std::string, uint32_t> m_nameToId;
+        std::vector<std::string> m_idToName;
+    };
+
+    // -----------------------
+    // Component Mask (dynamic)
+    // -----------------------
+    // Represents a set of components by their IDs. Backed by 64-bit words.
+    class ComponentMask
+    {
+    public:
+        ComponentMask() = default;
+
+        // Set a bit for component ID.
+        void set(uint32_t compId)
+        {
+            ensureBit(compId);
+            const auto [wordIdx, bit] = bitPos(compId);
+            m_words[wordIdx] |= (uint64_t(1) << bit);
+        }
+
+        // Clear a bit for component ID.
+        void clear(uint32_t compId)
+        {
+            if (!has(compId))
+                return;
+            const auto [wordIdx, bit] = bitPos(compId);
+            m_words[wordIdx] &= ~(uint64_t(1) << bit);
+        }
+
+        // Check if a bit for component ID is set.
+        bool has(uint32_t compId) const
+        {
+            const auto [wordIdx, bit] = bitPos(compId);
+            if (wordIdx >= m_words.size())
+                return false;
+            return (m_words[wordIdx] & (uint64_t(1) << bit)) != 0;
+        }
+
+        // Return true if this mask contains all bits in 'rhs'.
+        bool containsAll(const ComponentMask &rhs) const
+        {
+            const size_t n = std::max(m_words.size(), rhs.m_words.size());
+            for (size_t i = 0; i < n; ++i)
+            {
+                const uint64_t a = i < m_words.size() ? m_words[i] : 0;
+                const uint64_t b = i < rhs.m_words.size() ? rhs.m_words[i] : 0;
+                if ((a & b) != b)
+                    return false;
+            }
+            return true;
+        }
+
+        // Return true if this mask contains none of the bits in 'rhs'.
+        bool containsNone(const ComponentMask &rhs) const
+        {
+            const size_t n = std::max(m_words.size(), rhs.m_words.size());
+            for (size_t i = 0; i < n; ++i)
+            {
+                const uint64_t a = i < m_words.size() ? m_words[i] : 0;
+                const uint64_t b = i < rhs.m_words.size() ? rhs.m_words[i] : 0;
+                if ((a & b) != 0)
+                    return false;
+            }
+            return true;
+        }
+
+        // Convenience: required/excluded match.
+        bool matches(const ComponentMask &required, const ComponentMask &excluded) const
+        {
+            return containsAll(required) && containsNone(excluded);
+        }
+
+        // Stable string key for dictionary indexing (hex of words, high word first).
+        std::string toKey() const
+        {
+            if (m_words.empty())
+                return "0";
+            std::ostringstream oss;
+            oss << std::hex << std::setfill('0');
+            for (size_t i = m_words.size(); i-- > 0;)
+            {
+                oss << std::setw(16) << m_words[i];
+            }
+            return oss.str();
+        }
+
+        // Build a mask from a list of component IDs.
+        static ComponentMask fromIds(const std::vector<uint32_t> &ids)
+        {
+            ComponentMask m;
+            for (uint32_t id : ids)
+                m.set(id);
+            return m;
+        }
+
+        const std::vector<uint64_t> &words() const { return m_words; }
+
+    private:
+        std::vector<uint64_t> m_words; // 64 bits per word
+
+        static std::pair<size_t, uint32_t> bitPos(uint32_t compId)
+        {
+            const size_t wordIdx = compId / 64;
+            const uint32_t bit = compId % 64;
+            return {wordIdx, bit};
+        }
+
+        void ensureBit(uint32_t compId)
+        {
+            const size_t need = compId / 64 + 1;
+            if (m_words.size() < need)
+                m_words.resize(need, 0);
+        }
+    };
+
+} // namespace Engine::ECS
