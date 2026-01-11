@@ -31,6 +31,9 @@ namespace Engine
         virtual void SetEventCallback(const EventCallbackFn &callback) = 0;
         virtual void *GetWindowPointer() = 0;
 
+        // Input helpers (used by Sample)
+        virtual void GetCursorPosition(double &x, double &y) const = 0;
+
         // Factory
         static std::unique_ptr<Window> Create(const WindowProps &props = WindowProps());
     };

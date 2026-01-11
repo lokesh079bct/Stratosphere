@@ -3,6 +3,7 @@ project(Sample LANGUAGES CXX)
 
 add_executable(SampleApp src/main.cpp)
 target_link_libraries(SampleApp PRIVATE Engine)
+target_link_libraries(SampleApp PRIVATE nlohmann_json::nlohmann_json)
 target_include_directories(SampleApp PRIVATE ${CMAKE_SOURCE_DIR}/Engine/include)
 target_include_directories(SampleApp PRIVATE ${CMAKE_SOURCE_DIR}/Sample)
 
@@ -40,8 +41,16 @@ foreach(SPIRV ${SHADER_SPV})
     )
 endforeach()
 
+# Copy scenario definition next to the executable.
+add_custom_command(TARGET SampleApp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/Sample/Scinerio.json"
+        $<TARGET_FILE_DIR:SampleApp>/Scinerio.json
+    COMMENT "Copying scenario JSON: ${CMAKE_SOURCE_DIR}/Sample/Scinerio.json"
+)
+
 # Copy all *.json in Sample/entities to runtime output (SampleApp/entities/)
-file(GLOB_RECURSE SAMPLE_ENTITY_JSON_FILES
+file(GLOB_RECURSE SAMPLE_ENTITY_JSON_FILES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/Sample/entities/*.json"
 )
 

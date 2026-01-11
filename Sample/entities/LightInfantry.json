@@ -1,0 +1,55 @@
+{
+    "name": "LightInfantry",
+    "components": [
+        "Position",
+        "Velocity",
+        "Health",
+        "MoveTarget",
+        "MoveSpeed",
+        "Radius",
+        "Separation",
+        "AvoidanceParams",
+        "RenderMesh"
+    ],
+    "defaults": {
+        "Position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+        },
+        "Velocity": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+        },
+        "Health": {
+            "value": 100.0
+        },
+        "MoveTarget": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "active": 0
+        },
+        "MoveSpeed": {
+            "value": 3.5
+        },
+        "Radius": {
+            "r": 0.3
+        },
+        "Separation": {
+            "value": 0.15
+        },
+        "AvoidanceParams": {
+            "strength": 2.5,
+            "maxAccel": 8.0,
+            "blend": 0.55
+        }
+    },
+    "visual": {
+        "model": "assets/ObjModels/units/light_infantry.smesh",
+        "materialSet": "materials/faction_tint_standard.json",
+        "visualScale": 1.0,
+        "castShadow": true
+    }
+}

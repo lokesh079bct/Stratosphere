@@ -1,6 +1,7 @@
 #include "Engine/Window.h"
 #include <GLFW/glfw3.h>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 namespace Engine
@@ -63,6 +64,24 @@ namespace Engine
                     if (key == GLFW_KEY_DOWN)  d->EventCallback("DownPressed");
                     if (key == GLFW_KEY_ESCAPE) d->EventCallback("EscapePressed");
                 } });
+
+            glfwSetCursorPosCallback(data->Window, [](GLFWwindow *wnd, double x, double y)
+                                     {
+                auto d = static_cast<GLFWWindowData*>(glfwGetWindowUserPointer(wnd));
+                if (!d || !d->EventCallback) return;
+                std::ostringstream oss;
+                oss << "MouseMove " << x << " " << y;
+                d->EventCallback(oss.str()); });
+
+            glfwSetMouseButtonCallback(data->Window, [](GLFWwindow *wnd, int button, int action, int /*mods*/)
+                                       {
+                if (action != GLFW_PRESS && action != GLFW_RELEASE) return;
+                auto d = static_cast<GLFWWindowData*>(glfwGetWindowUserPointer(wnd));
+                if (!d || !d->EventCallback) return;
+
+                const bool down = (action == GLFW_PRESS);
+                if (button == GLFW_MOUSE_BUTTON_RIGHT) d->EventCallback(down ? "MouseButtonRightDown" : "MouseButtonRightUp");
+                if (button == GLFW_MOUSE_BUTTON_LEFT)  d->EventCallback(down ? "MouseButtonLeftDown" : "MouseButtonLeftUp"); });
         }
 
         virtual ~GLFWWindow() override
@@ -88,6 +107,11 @@ namespace Engine
         }
 
         virtual void *GetWindowPointer() override { return data->Window; }
+
+        virtual void GetCursorPosition(double &x, double &y) const override
+        {
+            glfwGetCursorPos(data->Window, &x, &y);
+        }
 
     private:
         GLFWWindowData *data;

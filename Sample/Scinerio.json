@@ -1,0 +1,104 @@
+{
+    "schema": "rts_scenario_v1",
+    "name": "Skirmish_Test_01",
+    "worldUnits": "meters",
+    "groundPlane": "XZ",
+    "anchors": {
+        "blue_base": {
+            "x": -320.0,
+            "z": -180.0
+        },
+        "blue_rally": {
+            "x": -200.0,
+            "z": -60.0
+        },
+        "red_base": {
+            "x": 340.0,
+            "z": 200.0
+        },
+        "red_rally": {
+            "x": 220.0,
+            "z": 80.0
+        },
+        "mid_bridge": {
+            "x": 0.0,
+            "z": 0.0
+        },
+        "north_hill": {
+            "x": 0.0,
+            "z": 260.0
+        }
+    },
+    "spawnGroups": [
+        {
+            "id": "blue_heavy_block_a",
+            "team": "Blue",
+            "unitType": "HeavyInfantry",
+            "count": 36,
+            "anchor": "blue_base",
+            "offset": {
+                "x": 12.0,
+                "z": 8.0
+            },
+            "facingYawDeg": 45.0,
+            "formation": {
+                "kind": "grid",
+                "columns": 6,
+                "spacing_m": "auto",
+                "jitter_m": 0.05
+            }
+        },
+        {
+            "id": "blue_heavy_block_b",
+            "team": "Blue",
+            "unitType": "HeavyInfantry",
+            "count": 24,
+            "anchor": "blue_rally",
+            "offset": {
+                "x": -10.0,
+                "z": 6.0
+            },
+            "facingYawDeg": 45.0,
+            "formation": {
+                "kind": "grid",
+                "columns": 6,
+                "spacing_m": "auto"
+            }
+        },
+        {
+            "id": "red_heavy_block_a",
+            "team": "Red",
+            "unitType": "HeavyInfantry",
+            "count": 40,
+            "anchor": "red_base",
+            "offset": {
+                "x": -14.0,
+                "z": -10.0
+            },
+            "facingYawDeg": 225.0,
+            "formation": {
+                "kind": "grid",
+                "columns": 8,
+                "spacing_m": "auto",
+                "jitter_m": 0.05
+            }
+        },
+        {
+            "id": "neutral_guard_mid",
+            "team": "Neutral",
+            "unitType": "HeavyInfantry",
+            "count": 12,
+            "anchor": "mid_bridge",
+            "offset": {
+                "x": 0.0,
+                "z": 0.0
+            },
+            "facingYawDeg": 0.0,
+            "formation": {
+                "kind": "circle",
+                "radius_m": 6.0,
+                "spacing_m": "auto"
+            }
+        }
+    ]
+}

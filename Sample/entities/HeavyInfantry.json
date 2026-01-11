@@ -1,0 +1,55 @@
+{
+    "name": "HeavyInfantry",
+    "components": [
+        "Position",
+        "Velocity",
+        "Health",
+        "MoveTarget",
+        "MoveSpeed",
+        "Radius",
+        "Separation",
+        "AvoidanceParams",
+        "RenderMesh"
+    ],
+    "defaults": {
+        "Position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+        },
+        "Velocity": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+        },
+        "Health": {
+            "value": 140.0
+        },
+        "MoveTarget": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "active": 0
+        },
+        "MoveSpeed": {
+            "value": 2.8
+        },
+        "Radius": {
+            "r": 0.5
+        },
+        "Separation": {
+            "value": 0.3
+        },
+        "AvoidanceParams": {
+            "strength": 3.0,
+            "maxAccel": 7.0,
+            "blend": 0.55
+        }
+    },
+    "visual": {
+        "model": "assets/ObjModels/units/heavy_infantry.smesh",
+        "materialSet": "materials/faction_tint_standard.json",
+        "visualScale": 1.0,
+        "castShadow": true
+    }
+}

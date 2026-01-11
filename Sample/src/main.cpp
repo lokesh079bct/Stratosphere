@@ -5,17 +5,21 @@
 #include "assets/MeshAsset.h"
 #include "assets/MeshFormats.h"
 #include "Engine/VulkanContext.h"
+#include "Engine/Window.h"
 
 #include "ECS/Prefab.h"
 #include "ECS/PrefabSpawner.h"
 #include "ECS/ECSContext.h"
 
 #include "utils/BufferUtils.h" // CreateOrUpdateVertexBuffer + DestroyVertexBuffer
-#include "systems/MovementSystem.h"
 #include <iostream>
+#include <filesystem>
 #include <memory>
 #include <random>
+#include <unordered_map>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 class MySampleApp : public Engine::Application
 {
@@ -29,9 +33,14 @@ public:
             GetVulkanContext().GetGraphicsQueue(),
             GetVulkanContext().GetGraphicsQueueFamilyIndex());
 
-        // Render tanks/turrets as instanced triangles driven by ECS
+        // Keep render setup; camera/world-to-screen mapping comes later.
         setupTriangleRenderer();
+        setupMeshFromAssets();
         setupECSFromPrefabs();
+
+        // Hook engine window events into our handler
+        SetEventCallback([this](const std::string &e)
+                         { this->OnEvent(e); });
     }
 
     ~MySampleApp() {}
@@ -59,7 +68,8 @@ public:
 
     void OnUpdate(Engine::TimeStep ts) override
     {
-        updateECS(ts);
+        (void)ts;
+        // Intentionally not running ECS updates yet.
     }
 
     void OnRender() override
@@ -68,23 +78,26 @@ public:
     }
 
 private:
+    static float pxToNdcX(double px, int w) { return static_cast<float>((px / double(w)) * 2.0 - 1.0); }
+    static float pxToNdcY(double py, int h) { return static_cast<float>(((py / double(h)) * 2.0 - 1.0)); }
+
     void setupTriangleRenderer()
     {
         // Interleaved vertex data: vec2 position, vec3 color (matches your triangle pipeline)
         const float vertices[] = {
-            // x,    y,    r, g, b
+            // x,     y,     r, g, b
             0.0f,
-            -0.1f,
+            -0.01f,
             1.0f,
             1.0f,
             1.0f,
-            0.1f,
-            0.1f,
+            0.01f,
+            0.01f,
             1.0f,
             1.0f,
             1.0f,
-            -0.1f,
-            0.1f,
+            -0.01f,
+            0.01f,
             1.0f,
             1.0f,
             1.0f,
@@ -125,7 +138,7 @@ private:
         // Register pass to renderer
         GetRenderer().registerPass(m_trianglesPass);
 
-        // Initial offset (push constants) if supported by your module
+        // Initial offset (push constants)
         m_trianglesPass->setOffset(0.0f, 0.0f);
     }
 
@@ -133,251 +146,244 @@ private:
     {
         auto &ecs = GetECS();
 
-        // Load prefab definitions from JSON copied next to executable.
+        // Load all prefab definitions from JSON copied next to executable.
         // (CMake copies Sample/entities/*.json -> <build>/Sample/entities/)
-        const std::string tankJson = Engine::ECS::readFileText("entities/Tank.json");
-        const std::string turretJson = Engine::ECS::readFileText("entities/Turret.json");
-        if (tankJson.empty() || turretJson.empty())
+        size_t prefabCount = 0;
+        try
         {
-            std::cerr << "Failed to read prefab JSON. Expected entities/Tank.json and entities/Turret.json next to executable." << std::endl;
-            return;
-        }
-
-        Engine::ECS::Prefab tankPrefab = Engine::ECS::loadPrefabFromJson(tankJson, ecs.components, ecs.archetypes);
-        Engine::ECS::Prefab turretPrefab = Engine::ECS::loadPrefabFromJson(turretJson, ecs.components, ecs.archetypes);
-        ecs.prefabs.add(tankPrefab);
-        ecs.prefabs.add(turretPrefab);
-
-        // Systems: build masks once after components are ensured by prefab load.
-        m_movementSystem.buildMasks(ecs.components);
-
-        // Spawn entities
-        spawnEntities();
-    }
-
-    void spawnEntities()
-    {
-        auto &ecs = GetECS();
-        const Engine::ECS::Prefab *tankPrefab = ecs.prefabs.get("Tank");
-        const Engine::ECS::Prefab *turretPrefab = ecs.prefabs.get("Turret");
-        if (!tankPrefab || !turretPrefab)
-        {
-            std::cerr << "Prefabs missing (Tank/Turret)" << std::endl;
-            return;
-        }
-
-        // Deterministic RNG for repeatable behavior
-        std::mt19937 rng(42);
-        std::uniform_real_distribution<float> posDist(-0.8f, 0.8f);
-        std::uniform_real_distribution<float> velDist(0.05f, 0.18f);
-
-        // 10 tanks
-        for (int i = 0; i < 10; ++i)
-        {
-            Engine::ECS::SpawnResult res = Engine::ECS::spawnFromPrefab(*tankPrefab, ecs.components, ecs.archetypes, ecs.stores, ecs.entities);
-            Engine::ECS::ArchetypeStore *store = ecs.stores.get(res.archetypeId);
-            if (!store)
-                continue;
-
-            // Override defaults with spread positions / velocities
-            if (store->hasPosition())
+            for (const auto &entry : std::filesystem::directory_iterator("entities"))
             {
-                auto &pos = store->positions()[res.row];
-                pos.x = posDist(rng);
-                pos.y = posDist(rng);
-                pos.z = 0.0f;
-            }
-            if (store->hasVelocity())
-            {
-                auto &vel = store->velocities()[res.row];
-                vel.x = (i % 2 == 0 ? 1.0f : -1.0f) * velDist(rng);
-                vel.y = (i % 3 == 0 ? 1.0f : -1.0f) * (velDist(rng) * 0.6f);
-                vel.z = 0.0f;
-            }
-        }
-
-        // 5 turrets
-        for (int i = 0; i < 5; ++i)
-        {
-            Engine::ECS::SpawnResult res = Engine::ECS::spawnFromPrefab(*turretPrefab, ecs.components, ecs.archetypes, ecs.stores, ecs.entities);
-            Engine::ECS::ArchetypeStore *store = ecs.stores.get(res.archetypeId);
-            if (!store)
-                continue;
-
-            if (store->hasPosition())
-            {
-                auto &pos = store->positions()[res.row];
-                pos.x = posDist(rng);
-                pos.y = posDist(rng);
-                pos.z = 0.0f;
-            }
-        }
-    }
-
-    void updateECS(Engine::TimeStep ts)
-    {
-        auto &ecs = GetECS();
-
-        // Move entities with Position+Velocity
-        m_movementSystem.update(ecs.stores, static_cast<float>(ts.DeltaSeconds));
-
-        // Bounce tanks at the viewport border: when trying to move out of NDC, flip velocity.
-        // Tanks are the archetypes that include Velocity.
-        constexpr float kMin = -1.0f;
-        constexpr float kMax = 1.0f;
-        for (const auto &ptr : ecs.stores.stores())
-        {
-            if (!ptr)
-                continue;
-            auto &store = *ptr;
-            if (!store.hasPosition())
-                continue;
-
-            if (!store.hasVelocity())
-                continue; // turrets
-
-            auto &positions = store.positions();
-            auto &velocities = store.velocities();
-            const uint32_t n = store.size();
-            for (uint32_t i = 0; i < n; ++i)
-            {
-                auto &p = positions[i];
-                auto &v = velocities[i];
-
-                if (p.x < kMin)
-                {
-                    p.x = kMin;
-                    v.x = -v.x;
-                }
-                else if (p.x > kMax)
-                {
-                    p.x = kMax;
-                    v.x = -v.x;
-                }
-
-                if (p.y < kMin)
-                {
-                    p.y = kMin;
-                    v.y = -v.y;
-                }
-                else if (p.y > kMax)
-                {
-                    p.y = kMax;
-                    v.y = -v.y;
-                }
-            }
-        }
-
-        // From time to time, tweak tank velocities slightly (keeps the ECS "alive").
-        m_velocityJitterAccum += ts.DeltaSeconds;
-        if (m_velocityJitterAccum >= 2.0)
-        {
-            m_velocityJitterAccum = 0.0;
-            std::mt19937 rng(static_cast<uint32_t>(m_velocitySeed++));
-            std::uniform_real_distribution<float> mulDist(0.75f, 1.25f);
-
-            for (const auto &ptr : ecs.stores.stores())
-            {
-                if (!ptr)
+                if (!entry.is_regular_file())
                     continue;
-                auto &store = *ptr;
-                if (!store.hasVelocity())
+                if (entry.path().extension() != ".json")
                     continue;
-
-                auto &velocities = store.velocities();
-                for (auto &v : velocities)
+                const std::string path = entry.path().generic_string();
+                const std::string jsonText = Engine::ECS::readFileText(path);
+                if (jsonText.empty())
                 {
-                    const float m = mulDist(rng);
-                    v.x *= m;
-                    v.y *= m;
+                    std::cerr << "[Prefab] Failed to read: " << path << "\n";
+                    continue;
                 }
+                Engine::ECS::Prefab p = Engine::ECS::loadPrefabFromJson(jsonText, ecs.components, ecs.archetypes, *m_assets);
+                if (p.name.empty())
+                {
+                    std::cerr << "[Prefab] Missing name in: " << path << "\n";
+                    continue;
+                }
+                ecs.prefabs.add(p);
+                ++prefabCount;
+                std::cout << "[Prefab] Loaded " << p.name << " from " << path << "\n";
+            }
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "[Prefab] Failed to enumerate entities/: " << e.what() << "\n";
+            return;
+        }
+
+        if (prefabCount == 0)
+        {
+            std::cerr << "[Prefab] No prefabs loaded from entities/*.json\n";
+            return;
+        }
+
+        spawnFromScenario();
+    }
+
+    struct SpawnGroupResolved
+    {
+        std::string id;
+        std::string unitType;
+        int count = 0;
+        float originX = 0.0f;
+        float originZ = 0.0f;
+        float jitterM = 0.0f;
+        std::string formationKind;
+        int columns = 0;
+        float circleRadiusM = 0.0f;
+        bool spacingAuto = true;
+        float spacingM = 0.0f;
+    };
+
+    static float prefabAutoSpacingMeters(const Engine::ECS::Prefab &p, Engine::ECS::ComponentRegistry &registry)
+    {
+        const uint32_t radId = registry.ensureId("Radius");
+        const uint32_t sepId = registry.ensureId("Separation");
+
+        float r = 0.0f;
+        float s = 0.0f;
+        if (auto it = p.defaults.find(radId); it != p.defaults.end() && std::holds_alternative<Engine::ECS::Radius>(it->second))
+            r = std::get<Engine::ECS::Radius>(it->second).r;
+        if (auto it = p.defaults.find(sepId); it != p.defaults.end() && std::holds_alternative<Engine::ECS::Separation>(it->second))
+            s = std::get<Engine::ECS::Separation>(it->second).value;
+
+        // For same-type units, desired center-to-center distance is:
+        // (r1+r2) + (sep1+sep2) = 2r + 2sep.
+        return 2.0f * (r + s);
+    }
+
+    void spawnFromScenario()
+    {
+        auto &ecs = GetECS();
+
+        const std::string text = Engine::ECS::readFileText("Scinerio.json");
+        if (text.empty())
+        {
+            std::cerr << "[Scenario] Failed to read Scinerio.json next to executable\n";
+            return;
+        }
+
+        nlohmann::json j;
+        try
+        {
+            j = nlohmann::json::parse(text);
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "[Scenario] JSON parse error: " << e.what() << "\n";
+            return;
+        }
+
+        const std::string scenarioName = j.value("name", std::string("(unnamed)"));
+        std::cout << "[Scenario] Loading: " << scenarioName << "\n";
+
+        // Anchors
+        std::unordered_map<std::string, std::pair<float, float>> anchors;
+        if (j.contains("anchors") && j["anchors"].is_object())
+        {
+            for (auto it = j["anchors"].begin(); it != j["anchors"].end(); ++it)
+            {
+                const std::string key = it.key();
+                const auto &a = it.value();
+                const float ax = a.value("x", 0.0f);
+                const float az = a.value("z", 0.0f);
+                anchors.emplace(key, std::make_pair(ax, az));
             }
         }
 
-        // Stream instance buffer for rendering: {x,y,r,g,b} per entity
-        uploadInstancesFromECS();
-    }
-
-    void uploadInstancesFromECS()
-    {
-        auto &ecs = GetECS();
-        if (!m_trianglesPass)
-            return;
-
-        std::vector<float> instances;
-
-        // Gather entities from each archetype store
-        for (const auto &ptr : ecs.stores.stores())
+        if (!j.contains("spawnGroups") || !j["spawnGroups"].is_array())
         {
-            if (!ptr)
-                continue;
-            const auto &store = *ptr;
-            if (!store.hasPosition())
-                continue;
+            std::cerr << "[Scenario] Missing spawnGroups[]\n";
+            return;
+        }
 
-            const bool isTank = store.hasVelocity();
-            const auto &positions = store.positions();
-            const uint32_t n = store.size();
+        uint32_t totalSpawned = 0;
+        for (const auto &g : j["spawnGroups"])
+        {
+            SpawnGroupResolved sg;
+            sg.id = g.value("id", std::string("(no-id)"));
+            sg.unitType = g.value("unitType", std::string(""));
+            sg.count = g.value("count", 0);
 
-            for (uint32_t i = 0; i < n; ++i)
+            const std::string anchorName = g.value("anchor", std::string(""));
+            const auto anchorIt = anchors.find(anchorName);
+            const float anchorX = (anchorIt != anchors.end()) ? anchorIt->second.first : 0.0f;
+            const float anchorZ = (anchorIt != anchors.end()) ? anchorIt->second.second : 0.0f;
+
+            const float offX = g.contains("offset") ? g["offset"].value("x", 0.0f) : 0.0f;
+            const float offZ = g.contains("offset") ? g["offset"].value("z", 0.0f) : 0.0f;
+            sg.originX = anchorX + offX;
+            sg.originZ = anchorZ + offZ;
+
+            if (g.contains("formation") && g["formation"].is_object())
             {
-                const auto &p = positions[i];
+                const auto &f = g["formation"];
+                sg.formationKind = f.value("kind", std::string("grid"));
+                sg.columns = f.value("columns", 0);
+                sg.circleRadiusM = f.value("radius_m", 0.0f);
+                sg.jitterM = f.value("jitter_m", 0.0f);
 
-                // Shades: tanks = greens, turrets = reds
-                float r = 0.10f, g = 0.10f, b = 0.10f;
-                if (isTank)
+                if (f.contains("spacing_m"))
                 {
-                    const float shade = 0.55f + 0.45f * (static_cast<float>((i % 10)) / 9.0f);
-                    r = 0.10f;
-                    g = shade;
-                    b = 0.10f;
+                    if (f["spacing_m"].is_string() && f["spacing_m"].get<std::string>() == "auto")
+                    {
+                        sg.spacingAuto = true;
+                    }
+                    else if (f["spacing_m"].is_number())
+                    {
+                        sg.spacingAuto = false;
+                        sg.spacingM = f["spacing_m"].get<float>();
+                    }
+                }
+            }
+
+            if (sg.unitType.empty() || sg.count <= 0)
+            {
+                std::cerr << "[Scenario] Skipping group id=" << sg.id << " (missing unitType or count)\n";
+                continue;
+            }
+
+            const Engine::ECS::Prefab *prefab = ecs.prefabs.get(sg.unitType);
+            if (!prefab)
+            {
+                std::cerr << "[Scenario] Missing prefab for unitType=" << sg.unitType << " (group=" << sg.id << ")\n";
+                continue;
+            }
+
+            float spacingM = sg.spacingAuto ? prefabAutoSpacingMeters(*prefab, ecs.components) : sg.spacingM;
+
+            std::mt19937 rng(static_cast<uint32_t>(std::hash<std::string>{}(sg.id)));
+            std::uniform_real_distribution<float> jitter(-sg.jitterM, sg.jitterM);
+
+            const bool isCircle = (sg.formationKind == "circle");
+            const bool isGrid = (!isCircle);
+            int columns = (sg.columns > 0) ? sg.columns : static_cast<int>(std::ceil(std::sqrt(static_cast<float>(sg.count))));
+            const int rows = static_cast<int>(std::ceil(static_cast<float>(sg.count) / static_cast<float>(columns)));
+            const float halfW = (static_cast<float>(columns) - 1.0f) * 0.5f;
+            const float halfH = (static_cast<float>(rows) - 1.0f) * 0.5f;
+
+            std::cout << "[Scenario] Spawn group id=" << sg.id
+                      << " unitType=" << sg.unitType
+                      << " count=" << sg.count
+                      << " origin=(" << sg.originX << "," << sg.originZ << ")"
+                      << " formation=" << sg.formationKind
+                      << " spacingM=" << spacingM
+                      << " jitterM=" << sg.jitterM << "\n";
+
+            for (int i = 0; i < sg.count; ++i)
+            {
+                float x = sg.originX;
+                float z = sg.originZ;
+
+                if (isGrid)
+                {
+                    const int col = i % columns;
+                    const int row = i / columns;
+                    x += (static_cast<float>(col) - halfW) * spacingM;
+                    z += (static_cast<float>(row) - halfH) * spacingM;
                 }
                 else
                 {
-                    const float shade = 0.55f + 0.45f * (static_cast<float>((i % 5)) / 4.0f);
-                    r = shade;
-                    g = 0.10f;
-                    b = 0.10f;
+                    const float angle = (sg.count > 0) ? (static_cast<float>(i) * 6.28318530718f / static_cast<float>(sg.count)) : 0.0f;
+                    x += std::cos(angle) * sg.circleRadiusM;
+                    z += std::sin(angle) * sg.circleRadiusM;
                 }
 
-                instances.push_back(p.x);
-                instances.push_back(p.y);
-                instances.push_back(r);
-                instances.push_back(g);
-                instances.push_back(b);
+                x += jitter(rng);
+                z += jitter(rng);
+
+                Engine::ECS::SpawnResult res = Engine::ECS::spawnFromPrefab(*prefab, ecs.components, ecs.archetypes, ecs.stores, ecs.entities);
+                Engine::ECS::ArchetypeStore *store = ecs.stores.get(res.archetypeId);
+                if (!store || !store->hasPosition())
+                    continue;
+
+                auto &p = store->positions()[res.row];
+                p.x = x;
+                p.y = 0.0f;
+                p.z = z;
+
+                ++totalSpawned;
             }
         }
 
-        if (instances.empty())
-        {
-            Engine::TrianglesRenderPassModule::InstanceBinding inst{};
-            inst.instanceBuffer = m_triangleInstancesVB.buffer;
-            inst.offset = 0;
-            inst.instanceCount = 1;
-            m_trianglesPass->setInstanceBinding(inst);
-            return;
-        }
-
-        VkDevice device = GetVulkanContext().GetDevice();
-        VkPhysicalDevice phys = GetVulkanContext().GetPhysicalDevice();
-        VkDeviceSize bytes = sizeof(float) * instances.size();
-        VkResult r = Engine::CreateOrUpdateVertexBuffer(device, phys, instances.data(), bytes, m_triangleInstancesVB);
-        if (r != VK_SUCCESS)
-        {
-            std::cerr << "Failed to update instance buffer" << std::endl;
-            return;
-        }
-
-        Engine::TrianglesRenderPassModule::InstanceBinding inst{};
-        inst.instanceBuffer = m_triangleInstancesVB.buffer;
-        inst.offset = 0;
-        inst.instanceCount = static_cast<uint32_t>(instances.size() / 5);
-        m_trianglesPass->setInstanceBinding(inst);
+        std::cout << "[Scenario] Total units spawned: " << totalSpawned << "\n";
     }
 
     void setupMeshFromAssets()
     {
         // Load cooked mesh via AssetManager
+        // The asset variable holds the mesh data and GPU buffers
+
         const char *path = "assets/ObjModels/male.smesh";
         m_bugattiHandle = m_assets->loadMesh(path);
         Engine::MeshAsset *asset = m_assets->getMesh(m_bugattiHandle);
@@ -411,6 +417,49 @@ private:
         m_trianglesPass->setVertexBinding(binding);
     }
 
+    void OnEvent(const std::string &name)
+    {
+        // Keep the mouse event wiring; logic will be updated later.
+        if (name == "MouseMove" || name.rfind("MouseMove", 0) == 0)
+        {
+            auto &win = GetWindow();
+            win.GetCursorPosition(m_lastMouseX, m_lastMouseY);
+            return;
+        }
+
+        if (name == "MouseButtonLeftDown")
+        {
+            auto &win = GetWindow();
+            win.GetCursorPosition(m_lastMouseX, m_lastMouseY);
+            std::cout << "[Input] LeftDown px=(" << m_lastMouseX << "," << m_lastMouseY << ")\n";
+            return;
+        }
+
+        if (name == "MouseButtonLeftUp")
+        {
+            auto &win = GetWindow();
+            win.GetCursorPosition(m_lastMouseX, m_lastMouseY);
+            std::cout << "[Input] LeftUp px=(" << m_lastMouseX << "," << m_lastMouseY << ")\n";
+            return;
+        }
+
+        if (name == "MouseButtonRightDown")
+        {
+            auto &win = GetWindow();
+            const int w = win.GetWidth();
+            const int h = win.GetHeight();
+
+            double mx = 0.0, my = 0.0;
+            win.GetCursorPosition(mx, my);
+
+            // Screen -> NDC (temporary; camera/world projection comes later)
+            const float ndcX = pxToNdcX(mx, w);
+            const float ndcY = pxToNdcY(my, h);
+            std::cout << "[Input] RightDown px=(" << mx << "," << my << ") ndc=(" << ndcX << "," << ndcY << ")\n";
+            return;
+        }
+    }
+
 private:
     // Asset management
     std::unique_ptr<Engine::AssetManager> m_assets;
@@ -424,10 +473,9 @@ private:
     bool m_showMesh = false;
     double m_timeAccum = 0.0;
 
-    // ECS systems / behavior
-    MovementSystem m_movementSystem{};
-    double m_velocityJitterAccum = 0.0;
-    uint64_t m_velocitySeed = 1337;
+    // Mouse state
+    double m_lastMouseX = 0.0;
+    double m_lastMouseY = 0.0;
 
     // Mesh state
     std::shared_ptr<Engine::MeshRenderPassModule> m_meshPass;
