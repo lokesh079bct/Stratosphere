@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 project(Sample LANGUAGES CXX)
 
-add_executable(SampleApp src/main.cpp)
+add_executable(SampleApp
+    src/main.cpp
+    src/ScenarioSpawner.cpp
+    src/update.cpp
+)
 target_link_libraries(SampleApp PRIVATE Engine)
 target_link_libraries(SampleApp PRIVATE nlohmann_json::nlohmann_json)
 target_include_directories(SampleApp PRIVATE ${CMAKE_SOURCE_DIR}/Engine/include)
