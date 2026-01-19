@@ -16,16 +16,76 @@ option(STRATO_PROCESS_SAMPLE_OBJ "Convert Sample OBJ assets to cooked SMESH duri
 
 if (STRATO_PROCESS_SAMPLE_OBJ)
     add_custom_target(ProcessSampleOBJAssets
-        COMMAND ObjToSMesh
+        COMMAND ObjToSMeshTool
             ${CMAKE_SOURCE_DIR}/Sample/assets/raw/ObjModels
             ${CMAKE_SOURCE_DIR}/Sample/assets/cooked/ObjModels
-        DEPENDS ObjToSMesh
+        DEPENDS ObjToSMeshTool
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Conditioning Sample OBJ assets to SMESH"
     )
     add_dependencies(SampleApp ProcessSampleOBJAssets)
 
 endif()
+
+# ============================================================
+# Option: run GLTF/GLB -> SMODEL conversion for Sample assets during build
+# ============================================================
+option(STRATO_PROCESS_SAMPLE_GLTF "Convert Sample glTF/glb assets to cooked SMODEL during build" ON)
+
+set(SAMPLE_GLTF_RAW_DIR    ${CMAKE_SOURCE_DIR}/Sample/assets/raw/GltfModels)
+set(SAMPLE_GLTF_COOKED_DIR ${CMAKE_SOURCE_DIR}/Sample/assets/cooked/GltfModels)
+
+if (STRATO_PROCESS_SAMPLE_GLTF)
+
+    # Find all glTF/glb files recursively in raw dir
+    file(GLOB_RECURSE SAMPLE_GLTF_FILES CONFIGURE_DEPENDS
+        "${SAMPLE_GLTF_RAW_DIR}/*.gltf"
+        "${SAMPLE_GLTF_RAW_DIR}/*.glb"
+    )
+
+    set(SAMPLE_COOKED_SMODEL_OUTPUTS "")
+
+    foreach(GLTF_FILE ${SAMPLE_GLTF_FILES})
+
+        # Get path relative to raw root
+        file(RELATIVE_PATH REL_PATH ${SAMPLE_GLTF_RAW_DIR} ${GLTF_FILE})
+
+        # REL_PATH might be: "Helmet/helmet.gltf"
+        get_filename_component(REL_DIR ${REL_PATH} DIRECTORY)
+        get_filename_component(BASE_NAME ${GLTF_FILE} NAME_WE)
+
+        # Cooked output path:
+        # Sample/assets/cooked/GlftModels/<REL_DIR>/<BASE_NAME>.smodel
+        set(OUT_DIR  ${SAMPLE_GLTF_COOKED_DIR}/${REL_DIR})
+        set(OUT_FILE ${OUT_DIR}/${BASE_NAME}.smodel)
+
+        add_custom_command(
+            OUTPUT ${OUT_FILE}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${OUT_DIR}
+            COMMAND GltfToSmodelTool
+                "${GLTF_FILE}"
+                "${OUT_FILE}"
+            DEPENDS GltfToSmodelTool "${GLTF_FILE}"
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Cooking GLTF -> SMODEL: ${REL_PATH}"
+            VERBATIM
+        )
+
+        list(APPEND SAMPLE_COOKED_SMODEL_OUTPUTS ${OUT_FILE})
+
+    endforeach()
+
+    # Custom target that cooks all glTF files
+    add_custom_target(ProcessSampleGLTFAssets ALL
+        DEPENDS ${SAMPLE_COOKED_SMODEL_OUTPUTS}
+        COMMENT "Conditioning Sample GLTF assets to SMODEL"
+    )
+
+    add_dependencies(SampleApp ProcessSampleGLTFAssets)
+
+endif()
+
+
 # Copy cooked SMESH assets next to the executable for relative imports
     add_custom_command(TARGET SampleApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -35,6 +95,17 @@ endif()
             $<TARGET_FILE_DIR:SampleApp>/assets/ObjModels
         COMMENT "Copying Sample SMESH assets to runtime output"
     )
+
+
+# Copy cooked SMODEL assets next to the executable for relative imports
+add_custom_command(TARGET SampleApp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        $<TARGET_FILE_DIR:SampleApp>/assets
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/Sample/assets/cooked/GltfModels
+        $<TARGET_FILE_DIR:SampleApp>/assets
+    COMMENT "Copying Sample SMODEL assets to runtime output"
+)
 
 # Copy SPIR-V shaders to runtime output dir (expects Engine/Shaders/*.spv present)
 file(GLOB SHADER_SPV ${CMAKE_SOURCE_DIR}/Engine/shaders/*.spv)

@@ -47,6 +47,9 @@ add_library(Engine STATIC
     src/SMeshLoader.cpp
     src/AssetManager.cpp
     src/MeshAssets.cpp
+    src/ImageUtils.cpp
+    src/SModelLoader.cpp
+    src/TextureAsset.cpp
 )
 
 # --- Shaders: compile GLSL -> SPIR-V (optional but recommended) ---
@@ -134,4 +137,4 @@ else()
     )
 endif()
 
-add_subdirectory(tools/ObjToSmesh)
+add_subdirectory(tools)
