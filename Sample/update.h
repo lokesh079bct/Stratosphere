@@ -12,6 +12,8 @@
 namespace Engine
 {
     class AssetManager;
+    class Renderer;
+    class Camera;
 }
 
 namespace Sample
@@ -24,6 +26,8 @@ namespace Sample
         void Update(Engine::ECS::ECSContext &ecs, float dtSeconds);
 
         void SetAssetManager(Engine::AssetManager *assets);
+        void SetRenderer(Engine::Renderer *renderer);
+        void SetCamera(Engine::Camera *camera);
         void SetGlobalMoveTarget(float x, float y, float z);
 
     private:
@@ -35,6 +39,6 @@ namespace Sample
         LocalAvoidanceSystem m_avoidance{&m_spatial};
         MovementSystem m_movement;
 
-        RenderSystem m_renderMesh;
+        RenderSystem m_renderModel;
     };
 }

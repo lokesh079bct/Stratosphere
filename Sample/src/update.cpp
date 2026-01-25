@@ -15,7 +15,7 @@ namespace Sample
         m_spatial.buildMasks(registry);
         m_avoidance.buildMasks(registry);
         m_movement.buildMasks(registry);
-        m_renderMesh.buildMasks(registry);
+        m_renderModel.buildMasks(registry);
 
         // Neighbor radius (meters). Tune later; matches SpatialIndexSystem doc.
         m_spatial.setCellSize(m_spatial.getCellSize());
@@ -37,12 +37,22 @@ namespace Sample
         m_spatial.update(ecs.stores, dtSeconds);
         m_avoidance.update(ecs.stores, dtSeconds);
         m_movement.update(ecs.stores, dtSeconds);
-        m_renderMesh.update(ecs.stores, dtSeconds);
+        m_renderModel.update(ecs.stores, dtSeconds);
     }
 
     void SystemRunner::SetAssetManager(Engine::AssetManager *assets)
     {
-        m_renderMesh.setAssetManager(assets);
+        m_renderModel.setAssetManager(assets);
+    }
+
+    void SystemRunner::SetRenderer(Engine::Renderer *renderer)
+    {
+        m_renderModel.setRenderer(renderer);
+    }
+
+    void SystemRunner::SetCamera(Engine::Camera *camera)
+    {
+        m_renderModel.setCamera(camera);
     }
 
     void SystemRunner::SetGlobalMoveTarget(float x, float y, float z)
