@@ -97,7 +97,7 @@
             "formation": {
                 "kind": "grid",
                 "columns": 8,
-                "spacing_m": 5,
+                "spacing_m": 2,
                 "jitter_m": 0.05
             }
         }

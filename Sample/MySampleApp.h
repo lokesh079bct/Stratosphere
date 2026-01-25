@@ -27,24 +27,33 @@ public:
 private:
     void setupECSFromPrefabs();
     void OnEvent(const std::string &name);
+    void ApplyRTSCamera(float aspect);
 
 private:
     struct RTSCameraController
     {
-        glm::vec3 pos{0.0f, 70.0f, 70.0f};
-        float yawDeg = -45.0f;
-        float pitchDeg = -50.0f;
+        // Ground-plane focus point (y is always 0).
+        glm::vec3 focus{0.0f, 0.0f, 0.0f};
 
+        // Orientation (kept stable; panning/zoom do not change this).
+        float yawDeg = -45.0f;
+        float pitchDeg = -55.0f;
+
+        // Zoom model: camera height above ground.
+        float height = 70.0f;
+
+        // Tuning
         float basePanSpeed = 0.0020f;
         float zoomSpeed = 5.0f;
-        float minHeight = 15.0f;
-        float maxHeight = 200.0f;
+        float minHeight = 5.0f;
+        float maxHeight = 250.0f;
     };
 
     std::unique_ptr<Engine::AssetManager> m_assets;
     RTSCameraController m_rtsCam;
     glm::vec2 m_lastMouse{0.0f, 0.0f};
     bool m_isPanning = false;
+    bool m_panJustStarted = false;
     float m_scrollDelta = 0.0f;
     Engine::Camera m_camera;
 

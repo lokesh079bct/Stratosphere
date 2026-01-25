@@ -14,6 +14,8 @@
 #include <iostream>
 #include <sstream>
 
+#include <cmath>
+
 #include <glm/gtc/matrix_transform.hpp>
 
 MySampleApp::MySampleApp() : Engine::Application()
@@ -24,24 +26,24 @@ MySampleApp::MySampleApp() : Engine::Application()
         GetVulkanContext().GetGraphicsQueue(),
         GetVulkanContext().GetGraphicsQueueFamilyIndex());
 
-    // Configure projection once; we keep it in sync every frame too.
+    // RTS camera initialization (classic defaults).
+    m_rtsCam.focus = {0.0f, 0.0f, 0.0f};
+    m_rtsCam.yawDeg = -45.0f;
+    m_rtsCam.pitchDeg = -55.0f;
+    m_rtsCam.height = 70.0f;
+    m_rtsCam.minHeight = 5.0f;
+    m_rtsCam.maxHeight = 250.0f;
+
     auto &win = GetWindow();
     const float aspect = static_cast<float>(win.GetWidth()) / static_cast<float>(win.GetHeight());
-    m_camera.SetPerspective(glm::radians(60.0f), aspect, 0.1f, 200.0f);
-
-    // RTS camera initialization (fixed yaw/pitch; position drives the view)
-    m_rtsCam.pos = {0.0f, 70.0f, 70.0f};
-    m_rtsCam.yawDeg = -45.0f;
-    m_rtsCam.pitchDeg = -50.0f;
-    m_camera.SetPosition(m_rtsCam.pos);
-    m_camera.SetRotation(m_rtsCam.yawDeg, m_rtsCam.pitchDeg);
+    ApplyRTSCamera(aspect);
 
     // Seed mouse position so the first frame doesn't produce a huge delta.
     double mx = 0.0, my = 0.0;
     win.GetCursorPosition(mx, my);
     m_lastMouse = {static_cast<float>(mx), static_cast<float>(my)};
 
-    // Allow gameplay systems to resolve RenderMesh handles to loaded assets.
+    // Allow gameplay systems to resolve RenderModel handles to loaded assets.
     m_systems.SetAssetManager(m_assets.get());
     m_systems.SetRenderer(&GetRenderer());
     m_systems.SetCamera(&m_camera);
@@ -70,10 +72,8 @@ void MySampleApp::Close()
 
 void MySampleApp::OnUpdate(Engine::TimeStep ts)
 {
-    // Keep camera projection in sync with window size.
     auto &win = GetWindow();
     const float aspect = static_cast<float>(win.GetWidth()) / static_cast<float>(win.GetHeight());
-    m_camera.SetPerspective(glm::radians(60.0f), aspect, 0.1f, 200.0f);
 
     // Read mouse and compute per-frame delta.
     double mx = 0.0, my = 0.0;
@@ -82,9 +82,16 @@ void MySampleApp::OnUpdate(Engine::TimeStep ts)
     const glm::vec2 delta = mouse - m_lastMouse;
     m_lastMouse = mouse;
 
-    // Pan (RMB drag) in ground plane.
+    // Pan (RMB drag) in ground plane; modifies focus only.
     if (m_isPanning)
     {
+        if (m_panJustStarted)
+        {
+            // Prevent a jump on the initial press frame.
+            m_panJustStarted = false;
+        }
+        else
+        {
         glm::vec3 forward;
         forward.x = std::cos(glm::radians(m_rtsCam.yawDeg)) * std::cos(glm::radians(m_rtsCam.pitchDeg));
         forward.y = std::sin(glm::radians(m_rtsCam.pitchDeg));
@@ -104,11 +111,11 @@ void MySampleApp::OnUpdate(Engine::TimeStep ts)
         if (rightLen2 > 1e-6f)
             rightXZ *= 1.0f / std::sqrt(rightLen2);
 
-        const float panScale = m_rtsCam.basePanSpeed * m_rtsCam.pos.y;
-        // Classic RTS/map drag feel:
-        // - drag right  -> camera moves left
-        // - drag down   -> camera moves forward
-        m_rtsCam.pos += (-rightXZ * delta.x + forwardXZ * delta.y) * panScale;
+        const float panScale = m_rtsCam.basePanSpeed * m_rtsCam.height;
+        // Update focus (not position). Mouse delta is in pixels.
+        m_rtsCam.focus += (-rightXZ * delta.x + forwardXZ * delta.y) * panScale;
+        m_rtsCam.focus.y = 0.0f;
+        }
     }
 
     // Zoom (mouse wheel) modifies height.
@@ -116,15 +123,41 @@ void MySampleApp::OnUpdate(Engine::TimeStep ts)
     m_scrollDelta = 0.0f;
     if (wheel != 0.0f)
     {
-        m_rtsCam.pos.y -= wheel * m_rtsCam.zoomSpeed;
-        m_rtsCam.pos.y = glm::clamp(m_rtsCam.pos.y, m_rtsCam.minHeight, m_rtsCam.maxHeight);
+        m_rtsCam.height -= wheel * m_rtsCam.zoomSpeed;
+        m_rtsCam.height = glm::clamp(m_rtsCam.height, m_rtsCam.minHeight, m_rtsCam.maxHeight);
     }
 
     // Apply RTS state to engine camera every frame.
-    m_camera.SetPosition(m_rtsCam.pos);
-    m_camera.SetRotation(m_rtsCam.yawDeg, m_rtsCam.pitchDeg);
+    ApplyRTSCamera(aspect);
 
     m_systems.Update(GetECS(), ts.DeltaSeconds);
+}
+
+void MySampleApp::ApplyRTSCamera(float aspect)
+{
+    // Projection stays perspective; keep it synced with window aspect.
+    m_camera.SetPerspective(glm::radians(60.0f), aspect, 0.1f, 200.0f);
+
+    // Direction from yaw/pitch.
+    glm::vec3 forward;
+    forward.x = std::cos(glm::radians(m_rtsCam.yawDeg)) * std::cos(glm::radians(m_rtsCam.pitchDeg));
+    forward.y = std::sin(glm::radians(m_rtsCam.pitchDeg));
+    forward.z = std::sin(glm::radians(m_rtsCam.yawDeg)) * std::cos(glm::radians(m_rtsCam.pitchDeg));
+    forward = glm::normalize(forward);
+
+    // Stable RTS mapping: keep a fixed slant while moving over ground.
+    glm::vec3 forwardXZ{forward.x, 0.0f, forward.z};
+    const float forwardLen2 = glm::dot(forwardXZ, forwardXZ);
+    if (forwardLen2 > 1e-6f)
+        forwardXZ *= 1.0f / std::sqrt(forwardLen2);
+    else
+        forwardXZ = {0.0f, 0.0f, -1.0f};
+
+    const float backDistance = m_rtsCam.height;
+    const glm::vec3 camPos = m_rtsCam.focus - forwardXZ * backDistance + glm::vec3(0.0f, m_rtsCam.height, 0.0f);
+
+    m_camera.SetPosition(camPos);
+    m_camera.SetRotation(m_rtsCam.yawDeg, m_rtsCam.pitchDeg);
 }
 
 void MySampleApp::OnRender()
@@ -189,6 +222,7 @@ void MySampleApp::OnEvent(const std::string &name)
     if (evt == "MouseButtonRightDown")
     {
         m_isPanning = true;
+        m_panJustStarted = true;
         auto &win = GetWindow();
         double mx = 0.0, my = 0.0;
         win.GetCursorPosition(mx, my);
@@ -199,6 +233,7 @@ void MySampleApp::OnEvent(const std::string &name)
     if (evt == "MouseButtonRightUp")
     {
         m_isPanning = false;
+        m_panJustStarted = false;
         return;
     }
 
