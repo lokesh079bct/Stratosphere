@@ -1,8 +1,11 @@
 #include "assets/AssetManager.h"
 #include "utils/ImageUtils.h" // UploadContext
+#include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
 #include <utility>
 #include <cstring>
+#include <algorithm>
 
 namespace Engine
 {
@@ -519,6 +522,13 @@ namespace Engine
 
         model->debugName = ""; // optional: you can store filename later
 
+        // Initialize bounds as invalid until we see a mesh
+        model->hasBounds = false;
+        model->fitScale = 1.0f;
+        model->center[0] = model->center[1] = model->center[2] = 0.0f;
+        model->boundsMin[0] = model->boundsMin[1] = model->boundsMin[2] = 0.0f;
+        model->boundsMax[0] = model->boundsMax[1] = model->boundsMax[2] = 0.0f;
+
         model->primitives.resize(view.primitiveCount());
 
         std::vector<MeshHandle> meshDeps;
@@ -543,11 +553,186 @@ namespace Engine
             {
                 addRef(prim.mesh);
                 meshDeps.push_back(prim.mesh);
+
+                // Expand model bounds from mesh bounds
+                MeshAsset *mesh = getMesh(prim.mesh);
+                if (mesh)
+                {
+                    const float *mn = mesh->getAABBMin();
+                    const float *mx = mesh->getAABBMax();
+
+                    if (!model->hasBounds)
+                    {
+                        std::memcpy(model->boundsMin, mn, sizeof(model->boundsMin));
+                        std::memcpy(model->boundsMax, mx, sizeof(model->boundsMax));
+                        model->hasBounds = true;
+                    }
+                    else
+                    {
+                        model->boundsMin[0] = std::min(model->boundsMin[0], mn[0]);
+                        model->boundsMin[1] = std::min(model->boundsMin[1], mn[1]);
+                        model->boundsMin[2] = std::min(model->boundsMin[2], mn[2]);
+
+                        model->boundsMax[0] = std::max(model->boundsMax[0], mx[0]);
+                        model->boundsMax[1] = std::max(model->boundsMax[1], mx[1]);
+                        model->boundsMax[2] = std::max(model->boundsMax[2], mx[2]);
+                    }
+                }
             }
             if (prim.material.isValid())
             {
                 addRef(prim.material);
                 matDeps.push_back(prim.material);
+            }
+        }
+
+        // Precompute center and fit scale to 20 units if bounds are valid
+        if (model->hasBounds)
+        {
+            model->center[0] = 0.5f * (model->boundsMin[0] + model->boundsMax[0]);
+            model->center[1] = 0.5f * (model->boundsMin[1] + model->boundsMax[1]);
+            model->center[2] = 0.5f * (model->boundsMin[2] + model->boundsMax[2]);
+
+            const float sizeX = model->boundsMax[0] - model->boundsMin[0];
+            const float sizeY = model->boundsMax[1] - model->boundsMin[1];
+            const float sizeZ = model->boundsMax[2] - model->boundsMin[2];
+            const float maxExtent = std::max(sizeX, std::max(sizeY, sizeZ));
+
+            const float target = 20.0f;
+            const float epsilon = 1e-4f;
+            if (maxExtent > epsilon)
+                model->fitScale = target / maxExtent;
+            else
+                model->fitScale = 1.0f;
+        }
+
+        // --------------------------
+        // V2: Populate nodes and primitive index mapping
+        // --------------------------
+        if (view.nodeCount() > 0)
+        {
+            model->nodes.resize(view.nodeCount());
+            model->nodePrimitiveIndices.resize(view.nodePrimitiveIndexCount());
+
+            // Copy primitive indices array
+            if (view.nodePrimitiveIndexCount() > 0 && view.nodePrimitiveIndices)
+            {
+                std::memcpy(model->nodePrimitiveIndices.data(), view.nodePrimitiveIndices, sizeof(uint32_t) * view.nodePrimitiveIndexCount());
+            }
+
+            // Track root (parentIndex == UINT32_MAX)
+            uint32_t rootIdx = 0;
+            const uint32_t U32_MAX = ~0u;
+
+            for (uint32_t i = 0; i < view.nodeCount(); ++i)
+            {
+                const Engine::smodel::SModelNodeRecord &nr = view.nodes[i];
+                ModelAsset::ModelNode &dst = model->nodes[i];
+
+                dst.parentIndex = nr.parentIndex;
+                dst.firstChild = nr.childCount ? nr.firstChild : U32_MAX;
+                dst.childCount = nr.childCount;
+                dst.firstPrimitiveIndex = nr.firstPrimitiveIndex;
+                dst.primitiveCount = nr.primitiveCount;
+                dst.debugName = view.getStringOrEmpty(nr.nameStrOffset);
+
+                // Copy local matrix (column-major)
+                std::memcpy(glm::value_ptr(dst.localMatrix), nr.localMatrix, sizeof(nr.localMatrix));
+
+                // Compute global in DFS order: parent then children
+                if (nr.parentIndex == U32_MAX)
+                {
+                    dst.globalMatrix = dst.localMatrix;
+                    rootIdx = i;
+                }
+                else
+                {
+                    const ModelAsset::ModelNode &parent = model->nodes[nr.parentIndex];
+                    dst.globalMatrix = parent.globalMatrix * dst.localMatrix;
+                }
+            }
+
+            model->rootNodeIndex = rootIdx;
+
+            // Recompute bounds in node-global space (node transforms applied)
+            bool firstCorner = true;
+            glm::vec3 bmin(0.0f);
+            glm::vec3 bmax(0.0f);
+
+            for (const auto &node : model->nodes)
+            {
+                if (node.primitiveCount == 0)
+                    continue;
+
+                for (uint32_t k = 0; k < node.primitiveCount; ++k)
+                {
+                    const uint32_t primIndex = model->nodePrimitiveIndices[node.firstPrimitiveIndex + k];
+                    if (primIndex >= model->primitives.size())
+                        continue;
+
+                    const ModelPrimitive &prim = model->primitives[primIndex];
+                    MeshAsset *mesh = getMesh(prim.mesh);
+                    if (!mesh)
+                        continue;
+
+                    const float *mn = mesh->getAABBMin();
+                    const float *mx = mesh->getAABBMax();
+
+                    const glm::vec3 c0(mn[0], mn[1], mn[2]);
+                    const glm::vec3 c1(mx[0], mn[1], mn[2]);
+                    const glm::vec3 c2(mn[0], mx[1], mn[2]);
+                    const glm::vec3 c3(mx[0], mx[1], mn[2]);
+                    const glm::vec3 c4(mn[0], mn[1], mx[2]);
+                    const glm::vec3 c5(mx[0], mn[1], mx[2]);
+                    const glm::vec3 c6(mn[0], mx[1], mx[2]);
+                    const glm::vec3 c7(mx[0], mx[1], mx[2]);
+
+                    const glm::vec3 corners[8] = {c0, c1, c2, c3, c4, c5, c6, c7};
+                    for (const glm::vec3 &corner : corners)
+                    {
+                        const glm::vec4 w = node.globalMatrix * glm::vec4(corner, 1.0f);
+                        const glm::vec3 p(w.x, w.y, w.z);
+                        if (firstCorner)
+                        {
+                            bmin = p;
+                            bmax = p;
+                            firstCorner = false;
+                        }
+                        else
+                        {
+                            bmin.x = std::min(bmin.x, p.x);
+                            bmin.y = std::min(bmin.y, p.y);
+                            bmin.z = std::min(bmin.z, p.z);
+                            bmax.x = std::max(bmax.x, p.x);
+                            bmax.y = std::max(bmax.y, p.y);
+                            bmax.z = std::max(bmax.z, p.z);
+                        }
+                    }
+                }
+            }
+
+            if (!firstCorner)
+            {
+                model->boundsMin[0] = bmin.x;
+                model->boundsMin[1] = bmin.y;
+                model->boundsMin[2] = bmin.z;
+                model->boundsMax[0] = bmax.x;
+                model->boundsMax[1] = bmax.y;
+                model->boundsMax[2] = bmax.z;
+                model->hasBounds = true;
+
+                model->center[0] = 0.5f * (model->boundsMin[0] + model->boundsMax[0]);
+                model->center[1] = 0.5f * (model->boundsMin[1] + model->boundsMax[1]);
+                model->center[2] = 0.5f * (model->boundsMin[2] + model->boundsMax[2]);
+
+                const float sizeX = model->boundsMax[0] - model->boundsMin[0];
+                const float sizeY = model->boundsMax[1] - model->boundsMin[1];
+                const float sizeZ = model->boundsMax[2] - model->boundsMin[2];
+                const float maxExtent = std::max(sizeX, std::max(sizeY, sizeZ));
+
+                const float target = 20.0f;
+                const float epsilon = 1e-4f;
+                model->fitScale = (maxExtent > epsilon) ? (target / maxExtent) : 1.0f;
             }
         }
 

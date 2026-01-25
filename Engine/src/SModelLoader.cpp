@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstring> // std::memcpy
+#include <limits>
 
 namespace Engine
 {
@@ -159,6 +160,24 @@ namespace Engine
             if (!tableRangeValid<SModelTextureRecord>(outView.header->texturesOffset, outView.header->textureCount, uFileSize, outError))
                 return false;
 
+            // V2: nodes table
+            if (outView.header->nodeCount > 0)
+            {
+                if (!tableRangeValid<SModelNodeRecord>(outView.header->nodesOffset, outView.header->nodeCount, uFileSize, outError))
+                    return false;
+            }
+
+            // V2: nodePrimitiveIndices table (u32 entries)
+            if (outView.header->nodePrimitiveIndexCount > 0)
+            {
+                const uint64_t bytes = uint64_t(outView.header->nodePrimitiveIndexCount) * sizeof(uint32_t);
+                if (!isRangeInsideFile(outView.header->nodePrimitiveIndicesOffset, bytes, uFileSize))
+                {
+                    outError = "NodePrimitiveIndices table out of file bounds.";
+                    return false;
+                }
+            }
+
             // --------------------------
             // Build pointers/views
             // --------------------------
@@ -168,6 +187,16 @@ namespace Engine
             outView.primitives = reinterpret_cast<const SModelPrimitiveRecord *>(base + outView.header->primitivesOffset);
             outView.materials = reinterpret_cast<const SModelMaterialRecord *>(base + outView.header->materialsOffset);
             outView.textures = reinterpret_cast<const SModelTextureRecord *>(base + outView.header->texturesOffset);
+
+            // V2: nodes + indices
+            if (outView.header->nodeCount > 0)
+            {
+                outView.nodes = reinterpret_cast<const SModelNodeRecord *>(base + outView.header->nodesOffset);
+            }
+            if (outView.header->nodePrimitiveIndexCount > 0)
+            {
+                outView.nodePrimitiveIndices = reinterpret_cast<const uint32_t *>(base + outView.header->nodePrimitiveIndicesOffset);
+            }
 
             outView.stringTable = reinterpret_cast<const char *>(base + outView.header->stringTableOffset);
             outView.blob = reinterpret_cast<const uint8_t *>(base + outView.header->blobOffset);
@@ -273,6 +302,57 @@ namespace Engine
                     return false;
                 if (!checkTex(mat.emissiveTexture, "emissiveTexture"))
                     return false;
+            }
+
+            // V2: validate node graph if present
+            if (outView.header->nodeCount > 0)
+            {
+                const uint32_t nodeCount = outView.header->nodeCount;
+                const uint32_t idxCount = outView.header->nodePrimitiveIndexCount;
+                const uint32_t primCount = outView.header->primitiveCount;
+
+                for (uint32_t ni = 0; ni < nodeCount; ++ni)
+                {
+                    const SModelNodeRecord &nr = outView.nodes[ni];
+
+                    const uint32_t U32_MAX = std::numeric_limits<uint32_t>::max();
+                    if (nr.parentIndex != U32_MAX && nr.parentIndex >= nodeCount)
+                    {
+                        outError = "Node parentIndex out of bounds";
+                        return false;
+                    }
+                    if (nr.childCount > 0)
+                    {
+                        if (nr.firstChild == U32_MAX)
+                        {
+                            outError = "Node has children but firstChild == UINT32_MAX";
+                            return false;
+                        }
+                        if (nr.firstChild + nr.childCount > nodeCount)
+                        {
+                            outError = "Node children range out of bounds";
+                            return false;
+                        }
+                    }
+
+                    if (nr.primitiveCount > 0)
+                    {
+                        if (nr.firstPrimitiveIndex + nr.primitiveCount > idxCount)
+                        {
+                            outError = "Node primitive index range out of bounds";
+                            return false;
+                        }
+                        for (uint32_t k = 0; k < nr.primitiveCount; ++k)
+                        {
+                            const uint32_t pidx = outView.nodePrimitiveIndices[nr.firstPrimitiveIndex + k];
+                            if (pidx >= primCount)
+                            {
+                                outError = "Node references invalid primitive index";
+                                return false;
+                            }
+                        }
+                    }
+                }
             }
 
             // If we reach here, file is valid and view is ready.
