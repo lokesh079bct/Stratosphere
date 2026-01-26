@@ -29,7 +29,7 @@ namespace Engine
         struct ModelNode
         {
             uint32_t parentIndex{~0u};
-            uint32_t firstChild{~0u};
+            uint32_t firstChildIndex{~0u};
             uint32_t childCount{0};
 
             uint32_t firstPrimitiveIndex{0};
@@ -43,6 +43,7 @@ namespace Engine
 
         std::vector<ModelNode> nodes;
         std::vector<uint32_t> nodePrimitiveIndices;
+        std::vector<uint32_t> nodeChildIndices;
         uint32_t rootNodeIndex{0};
 
         // Optional debug name (string table later)

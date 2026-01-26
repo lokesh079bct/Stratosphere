@@ -6,7 +6,7 @@ namespace Engine::smodel
 #pragma pack(push, 1)
 
     // ============================================================
-    // .smodel Header (V2)
+    // .smodel Header (V2.1)
     // ============================================================
     // The header contains:
     // - counts of record arrays
@@ -22,7 +22,7 @@ namespace Engine::smodel
     {
         uint32_t magic;        // must equal 'SMOD'
         uint16_t versionMajor; // 2
-        uint16_t versionMinor; // 0
+        uint16_t versionMinor; // 1
 
         uint32_t fileSizeBytes; // entire file size (validation)
         uint32_t flags;         // reserved for future use (0 for v1)
@@ -53,7 +53,11 @@ namespace Engine::smodel
         uint64_t stringTableSize;
         uint64_t blobSize;
 
-        uint64_t reserved1;
+        // NEW in v2.1: explicit direct-children list.
+        // Offsets are absolute byte offsets from file start (like other offsets).
+        // Stored as uint32_t to preserve the header's fixed 128-byte size.
+        uint32_t nodeChildIndicesOffset; // 0 if absent
+        uint32_t nodeChildIndicesCount;  // number of uint32 entries
     };
 
 #pragma pack(pop)

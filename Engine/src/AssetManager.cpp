@@ -7,6 +7,7 @@
 #include <cstring>
 #include <algorithm>
 #include <unordered_set>
+#include <functional>
 
 const float TARGET = 10.0f; // Target size of models after scaling
 namespace Engine
@@ -627,6 +628,7 @@ namespace Engine
         {
             model->nodes.resize(view.nodeCount());
             model->nodePrimitiveIndices.resize(view.nodePrimitiveIndexCount());
+            model->nodeChildIndices.resize(view.nodeChildIndexCount());
 
             // Copy primitive indices array
             if (view.nodePrimitiveIndexCount() > 0 && view.nodePrimitiveIndices)
@@ -634,7 +636,13 @@ namespace Engine
                 std::memcpy(model->nodePrimitiveIndices.data(), view.nodePrimitiveIndices, sizeof(uint32_t) * view.nodePrimitiveIndexCount());
             }
 
-            // Track root (parentIndex == UINT32_MAX)
+            // Copy child indices array
+            if (view.nodeChildIndexCount() > 0 && view.nodeChildIndices)
+            {
+                std::memcpy(model->nodeChildIndices.data(), view.nodeChildIndices, sizeof(uint32_t) * view.nodeChildIndexCount());
+            }
+
+            // Track first root (parentIndex == UINT32_MAX)
             uint32_t rootIdx = 0;
             const uint32_t U32_MAX = ~0u;
 
@@ -644,7 +652,7 @@ namespace Engine
                 ModelAsset::ModelNode &dst = model->nodes[i];
 
                 dst.parentIndex = nr.parentIndex;
-                dst.firstChild = nr.childCount ? nr.firstChild : U32_MAX;
+                dst.firstChildIndex = nr.childCount ? nr.firstChildIndex : U32_MAX;
                 dst.childCount = nr.childCount;
                 dst.firstPrimitiveIndex = nr.firstPrimitiveIndex;
                 dst.primitiveCount = nr.primitiveCount;
@@ -653,20 +661,50 @@ namespace Engine
                 // Copy local matrix (column-major)
                 std::memcpy(glm::value_ptr(dst.localMatrix), nr.localMatrix, sizeof(nr.localMatrix));
 
-                // Compute global in DFS order: parent then children
+                // Defer global computation; ordering is not guaranteed.
+                dst.globalMatrix = glm::mat4(1.0f);
+
                 if (nr.parentIndex == U32_MAX)
-                {
-                    dst.globalMatrix = dst.localMatrix;
                     rootIdx = i;
-                }
-                else
-                {
-                    const ModelAsset::ModelNode &parent = model->nodes[nr.parentIndex];
-                    dst.globalMatrix = parent.globalMatrix * dst.localMatrix;
-                }
             }
 
             model->rootNodeIndex = rootIdx;
+
+            // Compute globals using explicit child lists (supports any node ordering).
+            {
+                const uint32_t nodeCount = static_cast<uint32_t>(model->nodes.size());
+                std::vector<uint8_t> visited(nodeCount, 0);
+
+                std::function<void(uint32_t, const glm::mat4 &)> compute = [&](uint32_t nodeIdx, const glm::mat4 &parentGlobal)
+                {
+                    if (nodeIdx >= nodeCount)
+                        return;
+                    if (visited[nodeIdx])
+                        return;
+                    visited[nodeIdx] = 1;
+
+                    ModelAsset::ModelNode &n = model->nodes[nodeIdx];
+                    n.globalMatrix = parentGlobal * n.localMatrix;
+
+                    if (n.childCount == 0)
+                        return;
+                    if (n.firstChildIndex == U32_MAX)
+                        return;
+
+                    const uint32_t start = n.firstChildIndex;
+                    for (uint32_t ci = 0; ci < n.childCount; ++ci)
+                    {
+                        const uint32_t child = model->nodeChildIndices[start + ci];
+                        compute(child, n.globalMatrix);
+                    }
+                };
+
+                for (uint32_t i = 0; i < nodeCount; ++i)
+                {
+                    if (model->nodes[i].parentIndex == U32_MAX)
+                        compute(i, glm::mat4(1.0f));
+                }
+            }
 
             // Recompute bounds in node-global space (node transforms applied)
             bool firstCorner = true;

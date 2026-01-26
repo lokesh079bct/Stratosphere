@@ -178,6 +178,17 @@ namespace Engine
                 }
             }
 
+            // V2.1: nodeChildIndices table (u32 entries)
+            if (outView.header->nodeChildIndicesCount > 0)
+            {
+                const uint64_t bytes = uint64_t(outView.header->nodeChildIndicesCount) * sizeof(uint32_t);
+                if (!isRangeInsideFile(outView.header->nodeChildIndicesOffset, bytes, uFileSize))
+                {
+                    outError = "NodeChildIndices table out of file bounds.";
+                    return false;
+                }
+            }
+
             // --------------------------
             // Build pointers/views
             // --------------------------
@@ -196,6 +207,10 @@ namespace Engine
             if (outView.header->nodePrimitiveIndexCount > 0)
             {
                 outView.nodePrimitiveIndices = reinterpret_cast<const uint32_t *>(base + outView.header->nodePrimitiveIndicesOffset);
+            }
+            if (outView.header->nodeChildIndicesCount > 0)
+            {
+                outView.nodeChildIndices = reinterpret_cast<const uint32_t *>(base + outView.header->nodeChildIndicesOffset);
             }
 
             outView.stringTable = reinterpret_cast<const char *>(base + outView.header->stringTableOffset);
@@ -309,6 +324,7 @@ namespace Engine
             {
                 const uint32_t nodeCount = outView.header->nodeCount;
                 const uint32_t idxCount = outView.header->nodePrimitiveIndexCount;
+                const uint32_t childIdxCount = outView.header->nodeChildIndicesCount;
                 const uint32_t primCount = outView.header->primitiveCount;
 
                 for (uint32_t ni = 0; ni < nodeCount; ++ni)
@@ -323,15 +339,39 @@ namespace Engine
                     }
                     if (nr.childCount > 0)
                     {
-                        if (nr.firstChild == U32_MAX)
+                        if (outView.nodeChildIndices == nullptr)
                         {
-                            outError = "Node has children but firstChild == UINT32_MAX";
+                            outError = "Node has children but nodeChildIndices table is missing";
                             return false;
                         }
-                        if (nr.firstChild + nr.childCount > nodeCount)
+
+                        if (nr.firstChildIndex == U32_MAX)
                         {
-                            outError = "Node children range out of bounds";
+                            outError = "Node has children but firstChildIndex == UINT32_MAX";
                             return false;
+                        }
+
+                        if (nr.firstChildIndex + nr.childCount > childIdxCount)
+                        {
+                            outError = "Node child index range out of bounds";
+                            return false;
+                        }
+
+                        for (uint32_t k = 0; k < nr.childCount; ++k)
+                        {
+                            const uint32_t c = outView.nodeChildIndices[nr.firstChildIndex + k];
+                            if (c >= nodeCount)
+                            {
+                                outError = "Node references invalid child node index";
+                                return false;
+                            }
+
+                            // Optional strong check: child record should agree on parentIndex.
+                            if (outView.nodes[c].parentIndex != ni)
+                            {
+                                outError = "Node child parentIndex mismatch";
+                                return false;
+                            }
                         }
                     }
 

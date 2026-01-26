@@ -11,9 +11,9 @@ namespace Engine::smodel
         uint32_t nameStrOffset; // 0 = empty
 
         // Hierarchy
-        uint32_t parentIndex; // UINT32_MAX for root
-        uint32_t firstChild;  // UINT32_MAX if none
-        uint32_t childCount;  // 0 if none
+        uint32_t parentIndex;     // UINT32_MAX for root
+        uint32_t firstChildIndex; // start offset into nodeChildIndices[]
+        uint32_t childCount;      // number of direct children
 
         // Primitive range into NodePrimitiveIndices[]
         uint32_t firstPrimitiveIndex; // start index into nodePrimitiveIndices

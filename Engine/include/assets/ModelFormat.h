@@ -24,7 +24,7 @@ namespace Engine::smodel
     static constexpr uint32_t SMODEL_MAGIC = 0x444F4D53;
 
     static constexpr uint16_t SMODEL_VERSION_MAJOR = 2;
-    static constexpr uint16_t SMODEL_VERSION_MINOR = 0;
+    static constexpr uint16_t SMODEL_VERSION_MINOR = 1;
 
     // Small helper for loader validation.
     // If this returns false, loader should reject the file.
@@ -35,7 +35,12 @@ namespace Engine::smodel
         if (h.versionMajor != SMODEL_VERSION_MAJOR)
             return false;
 
-        // Minor might be forward-compatible in future.
+        // v2.1 introduced nodeChildIndices[] and changed node child semantics.
+        // Treat v2.0 as incompatible.
+        if (h.versionMinor < SMODEL_VERSION_MINOR)
+            return false;
+
+        // Minor can be forward-compatible.
         return true;
     }
 

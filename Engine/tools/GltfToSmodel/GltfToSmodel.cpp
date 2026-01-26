@@ -405,6 +405,7 @@ int main(int argc, char **argv)
     std::vector<sm::SModelTextureRecord> textureRecords;
     std::vector<sm::SModelNodeRecord> nodeRecords;
     std::vector<uint32_t> nodePrimitiveIndices;
+    std::vector<uint32_t> nodeChildIndices;
 
     // ------------------------------------------------------------
     // Texture dedup map
@@ -804,22 +805,21 @@ int main(int argc, char **argv)
         out[15] = m.d4;
     };
 
-    std::function<void(const aiNode *, uint32_t)> EmitNode = [&](const aiNode *n, uint32_t parentIndex)
+    std::function<uint32_t(const aiNode *, uint32_t)> EmitNode = [&](const aiNode *n, uint32_t parentIndex) -> uint32_t
     {
         if (!n)
-            return;
+            return U32_MAX;
 
-        sm::SModelNodeRecord rec{};
+        const uint32_t thisIndex = static_cast<uint32_t>(nodeRecords.size());
+        nodeRecords.push_back(sm::SModelNodeRecord{}); // reserve slot; filled below
+
+        sm::SModelNodeRecord &rec = nodeRecords[thisIndex];
         rec.nameStrOffset = strings.add(n->mName.length > 0 ? std::string(n->mName.C_Str()) : std::string());
         rec.parentIndex = (parentIndex == U32_MAX) ? U32_MAX : parentIndex;
-        rec.firstChild = U32_MAX;
-        rec.childCount = 0;
+
         rec.firstPrimitiveIndex = static_cast<uint32_t>(nodePrimitiveIndices.size());
         rec.primitiveCount = 0;
         ConvertAiToColumnMajor(n->mTransformation, rec.localMatrix);
-
-        const uint32_t thisIndex = static_cast<uint32_t>(nodeRecords.size());
-        nodeRecords.push_back(rec);
 
         // Append primitive indices for meshes under this node
         for (unsigned mi = 0; mi < n->mNumMeshes; ++mi)
@@ -829,25 +829,24 @@ int main(int argc, char **argv)
             if (primIdx >= 0)
             {
                 nodePrimitiveIndices.push_back(static_cast<uint32_t>(primIdx));
-                nodeRecords[thisIndex].primitiveCount++;
+                rec.primitiveCount++;
             }
         }
 
-        // Children
-        if (n->mNumChildren > 0)
+        // NEW: explicit direct-children list (works with DFS ordering)
+        rec.firstChildIndex = static_cast<uint32_t>(nodeChildIndices.size());
+        rec.childCount = static_cast<uint32_t>(n->mNumChildren);
+
+        for (unsigned ci = 0; ci < n->mNumChildren; ++ci)
         {
-            nodeRecords[thisIndex].firstChild = static_cast<uint32_t>(nodeRecords.size());
-            for (unsigned ci = 0; ci < n->mNumChildren; ++ci)
-            {
-                const uint32_t childIndex = static_cast<uint32_t>(nodeRecords.size());
-                EmitNode(n->mChildren[ci], thisIndex);
-                (void)childIndex; // not used directly; DFS appends sequentially
-                nodeRecords[thisIndex].childCount++;
-            }
+            const uint32_t childIndex = EmitNode(n->mChildren[ci], thisIndex);
+            nodeChildIndices.push_back(childIndex);
         }
+
+        return thisIndex;
     };
 
-    EmitNode(scene->mRootNode, U32_MAX);
+    (void)EmitNode(scene->mRootNode, U32_MAX);
 
     // Build header offsets
     // File layout:
@@ -862,7 +861,7 @@ int main(int argc, char **argv)
     sm::SModelHeader header{};
     header.magic = sm::SMODEL_MAGIC;
     header.versionMajor = 2;
-    header.versionMinor = 0;
+    header.versionMinor = 1;
 
     header.meshCount = static_cast<uint32_t>(meshRecords.size());
     header.primitiveCount = static_cast<uint32_t>(primRecords.size());
@@ -870,6 +869,7 @@ int main(int argc, char **argv)
     header.textureCount = static_cast<uint32_t>(textureRecords.size());
     header.nodeCount = static_cast<uint32_t>(nodeRecords.size());
     header.nodePrimitiveIndexCount = static_cast<uint32_t>(nodePrimitiveIndices.size());
+    header.nodeChildIndicesCount = static_cast<uint32_t>(nodeChildIndices.size());
 
     uint64_t cursor = sizeof(sm::SModelHeader);
 
@@ -892,6 +892,10 @@ int main(int argc, char **argv)
     // Node primitive indices
     header.nodePrimitiveIndicesOffset = cursor;
     cursor += uint64_t(nodePrimitiveIndices.size()) * sizeof(uint32_t);
+
+    // Node child indices
+    header.nodeChildIndicesOffset = static_cast<uint32_t>(cursor);
+    cursor += uint64_t(nodeChildIndices.size()) * sizeof(uint32_t);
 
     header.stringTableOffset = cursor;
     header.stringTableSize = static_cast<uint32_t>(strings.data.size());
@@ -922,6 +926,7 @@ int main(int argc, char **argv)
     WriteVector(out, textureRecords);
     WriteVector(out, nodeRecords);
     WriteVector(out, nodePrimitiveIndices);
+    WriteVector(out, nodeChildIndices);
     WriteChars(out, strings.data);
     WriteBytes(out, blob.bytes);
 

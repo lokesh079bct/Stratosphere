@@ -10,6 +10,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <cmath>
+#include <functional>
 #include <iostream>
 
 namespace Sample
@@ -96,6 +97,7 @@ namespace Sample
         {
             const auto &nodes = model->nodes;
             const auto &np = model->nodePrimitiveIndices;
+            const auto &nc = model->nodeChildIndices;
             const uint32_t nodeCount = static_cast<uint32_t>(nodes.size());
             const uint32_t primCount = static_cast<uint32_t>(model->primitives.size());
 
@@ -119,10 +121,29 @@ namespace Sample
                 }
                 if (n.childCount > 0)
                 {
-                    if (n.firstChild == ~0u || n.firstChild + n.childCount > nodeCount)
+                    if (n.firstChildIndex == ~0u || (size_t(n.firstChildIndex) + size_t(n.childCount) > nc.size()))
                     {
-                        std::cerr << "  Node[" << i << "] invalid child range first=" << n.firstChild << " count=" << n.childCount << "\n";
+                        std::cerr << "  Node[" << i << "] invalid child range firstChildIndex=" << n.firstChildIndex << " count=" << n.childCount << "\n";
                         nodeOk = false;
+                    }
+                    else
+                    {
+                        for (uint32_t k = 0; k < n.childCount; ++k)
+                        {
+                            const uint32_t c = nc[n.firstChildIndex + k];
+                            if (c >= nodeCount)
+                            {
+                                std::cerr << "  Node[" << i << "] child index out of bounds: " << c << "\n";
+                                nodeOk = false;
+                                break;
+                            }
+                            if (nodes[c].parentIndex != i)
+                            {
+                                std::cerr << "  Node[" << i << "] child parent mismatch child=" << c << " parentIndex=" << nodes[c].parentIndex << "\n";
+                                nodeOk = false;
+                                break;
+                            }
+                        }
                     }
                 }
                 if (n.primitiveCount > 0)
@@ -143,23 +164,58 @@ namespace Sample
                     }
                 }
 
-                // Recompute expected global = parent.global * local (or local if root)
-                glm::mat4 expected = n.localMatrix;
-                if (n.parentIndex != ~0u && n.parentIndex < nodeCount)
+                // Global validation done after we compute expected globals via traversal.
+            }
+
+            // Validate globals via DFS (ordering-independent).
+            {
+                std::vector<glm::mat4> expectedGlobals(nodeCount, glm::mat4(1.0f));
+                std::vector<uint8_t> visited(nodeCount, 0);
+
+                std::function<void(uint32_t, const glm::mat4 &)> dfs = [&](uint32_t idx, const glm::mat4 &parent)
                 {
-                    expected = nodes[n.parentIndex].globalMatrix * n.localMatrix;
+                    if (idx >= nodeCount)
+                        return;
+                    if (visited[idx])
+                        return;
+                    visited[idx] = 1;
+
+                    const auto &n = nodes[idx];
+                    expectedGlobals[idx] = parent * n.localMatrix;
+
+                    if (n.childCount == 0 || n.firstChildIndex == ~0u)
+                        return;
+                    if (size_t(n.firstChildIndex) + size_t(n.childCount) > nc.size())
+                        return;
+
+                    for (uint32_t k = 0; k < n.childCount; ++k)
+                    {
+                        const uint32_t c = nc[n.firstChildIndex + k];
+                        dfs(c, expectedGlobals[idx]);
+                    }
+                };
+
+                for (uint32_t i = 0; i < nodeCount; ++i)
+                {
+                    if (nodes[i].parentIndex == ~0u)
+                        dfs(i, glm::mat4(1.0f));
                 }
 
-                // Compare to stored global
-                const float *a = glm::value_ptr(expected);
-                const float *b = glm::value_ptr(n.globalMatrix);
-                for (int m = 0; m < 16; ++m)
+                for (uint32_t i = 0; i < nodeCount; ++i)
                 {
-                    if (!nearlyEqual(a[m], b[m]))
+                    if (!visited[i])
+                        continue;
+
+                    const float *a = glm::value_ptr(expectedGlobals[i]);
+                    const float *b = glm::value_ptr(nodes[i].globalMatrix);
+                    for (int m = 0; m < 16; ++m)
                     {
-                        std::cerr << "  Node[" << i << "] global mismatch at element " << m << " expected=" << a[m] << " got=" << b[m] << "\n";
-                        nodeOk = false;
-                        break;
+                        if (!nearlyEqual(a[m], b[m]))
+                        {
+                            std::cerr << "  Node[" << i << "] global mismatch at element " << m << " expected=" << a[m] << " got=" << b[m] << "\n";
+                            nodeOk = false;
+                            break;
+                        }
                     }
                 }
             }
