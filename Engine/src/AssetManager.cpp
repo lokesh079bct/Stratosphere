@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <unordered_set>
 #include <functional>
+#include <iostream>
 
 const float TARGET = 10.0f; // Target size of models after scaling
 namespace Engine
@@ -328,6 +329,7 @@ namespace Engine
         std::string err;
         if (!Engine::smodel::LoadSModelFile(cookedModelPath, view, err))
         {
+            std::cerr << "[AssetManager] loadModel: Failed to load .smodel: " << err << "\n";
             return ModelHandle{};
         }
 

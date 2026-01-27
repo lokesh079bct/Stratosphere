@@ -811,9 +811,9 @@ int main(int argc, char **argv)
             return U32_MAX;
 
         const uint32_t thisIndex = static_cast<uint32_t>(nodeRecords.size());
-        nodeRecords.push_back(sm::SModelNodeRecord{}); // reserve slot; filled below
+        nodeRecords.push_back(sm::SModelNodeRecord{}); // reserve slot; filled at end
 
-        sm::SModelNodeRecord &rec = nodeRecords[thisIndex];
+        sm::SModelNodeRecord rec{};
         rec.nameStrOffset = strings.add(n->mName.length > 0 ? std::string(n->mName.C_Str()) : std::string());
         rec.parentIndex = (parentIndex == U32_MAX) ? U32_MAX : parentIndex;
 
@@ -834,14 +834,30 @@ int main(int argc, char **argv)
         }
 
         // NEW: explicit direct-children list (works with DFS ordering)
-        rec.firstChildIndex = static_cast<uint32_t>(nodeChildIndices.size());
-        rec.childCount = static_cast<uint32_t>(n->mNumChildren);
-
-        for (unsigned ci = 0; ci < n->mNumChildren; ++ci)
+        if (n->mNumChildren > 0)
         {
-            const uint32_t childIndex = EmitNode(n->mChildren[ci], thisIndex);
-            nodeChildIndices.push_back(childIndex);
+            rec.firstChildIndex = static_cast<uint32_t>(nodeChildIndices.size());
+            rec.childCount = static_cast<uint32_t>(n->mNumChildren);
+
+            // Reserve a contiguous slice for this node's *direct* children.
+            // This prevents descendant emissions from interleaving into this node's slice.
+            const uint32_t start = rec.firstChildIndex;
+            nodeChildIndices.resize(size_t(nodeChildIndices.size()) + size_t(rec.childCount), U32_MAX);
+
+            for (uint32_t ci = 0; ci < rec.childCount; ++ci)
+            {
+                const uint32_t childIndex = EmitNode(n->mChildren[ci], thisIndex);
+                nodeChildIndices[start + ci] = childIndex;
+            }
         }
+        else
+        {
+            rec.firstChildIndex = U32_MAX;
+            rec.childCount = 0;
+        }
+
+        // IMPORTANT: write the record after recursion to avoid invalidated references.
+        nodeRecords[thisIndex] = rec;
 
         return thisIndex;
     };
