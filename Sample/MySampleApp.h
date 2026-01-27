@@ -32,6 +32,7 @@ private:
     void setupECSFromPrefabs();
     void OnEvent(const std::string &name);
     void ApplyRTSCamera(float aspect);
+    void PickAndSelectEntityAtCursor();
 
 private:
     struct RTSCameraController

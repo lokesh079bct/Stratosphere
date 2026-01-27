@@ -14,6 +14,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 #include <cmath>
@@ -129,7 +130,7 @@ void MySampleApp::OnUpdate(Engine::TimeStep ts)
     const glm::vec2 delta = mouse - m_lastMouse;
     m_lastMouse = mouse;
 
-    // Pan (RMB drag) in ground plane; modifies focus only.
+    // Pan (LMB drag) in ground plane; modifies focus only.
     if (m_isPanning)
     {
         if (m_panJustStarted)
@@ -178,6 +179,121 @@ void MySampleApp::OnUpdate(Engine::TimeStep ts)
     ApplyRTSCamera(aspect);
 
     m_systems.Update(GetECS(), ts.DeltaSeconds);
+}
+
+void MySampleApp::PickAndSelectEntityAtCursor()
+{
+    auto &ecs = GetECS();
+    auto &win = GetWindow();
+
+    double mx = 0.0, my = 0.0;
+    win.GetCursorPosition(mx, my);
+
+    const float mouseX = static_cast<float>(mx);
+    const float mouseY = static_cast<float>(my);
+    const float width = static_cast<float>(win.GetWidth());
+    const float height = static_cast<float>(win.GetHeight());
+
+    const uint32_t selectedId = ecs.components.ensureId("Selected");
+    const uint32_t posId = ecs.components.ensureId("Position");
+    const uint32_t rmId = ecs.components.ensureId("RenderModel");
+    const uint32_t raId = ecs.components.ensureId("RenderAnimation");
+    const uint32_t disabledId = ecs.components.ensureId("Disabled");
+    const uint32_t deadId = ecs.components.ensureId("Dead");
+
+    Engine::ECS::ComponentMask required;
+    required.set(posId);
+    required.set(rmId);
+    required.set(raId);
+
+    Engine::ECS::ComponentMask excluded;
+    excluded.set(disabledId);
+    excluded.set(deadId);
+
+    // Clear existing selection first.
+    for (const auto &ptr : ecs.stores.stores())
+    {
+        if (!ptr)
+            continue;
+        auto &store = *ptr;
+        auto &masks = store.rowMasks();
+        for (auto &mask : masks)
+            mask.clear(selectedId);
+    }
+
+    // Project entities to screen; pick closest to cursor within a small radius.
+    const glm::mat4 view = m_camera.GetViewMatrix();
+    const glm::mat4 proj = m_camera.GetProjectionMatrix();
+    const glm::mat4 vp = proj * view;
+
+    constexpr float kPickRadiusPx = 50.0f;
+    const float bestRadius2 = kPickRadiusPx * kPickRadiusPx;
+    float bestD2 = bestRadius2;
+    float bestCamD2 = std::numeric_limits<float>::infinity();
+
+    Engine::ECS::ArchetypeStore *bestStore = nullptr;
+    uint32_t bestRow = 0;
+
+    for (const auto &ptr : ecs.stores.stores())
+    {
+        if (!ptr)
+            continue;
+        auto &store = *ptr;
+        if (!store.signature().containsAll(required))
+            continue;
+        if (!store.signature().containsNone(excluded))
+            continue;
+        if (!store.hasPosition() || !store.hasRenderModel() || !store.hasRenderAnimation())
+            continue;
+
+        const auto &masks = store.rowMasks();
+        const auto &positions = store.positions();
+        const uint32_t n = store.size();
+        for (uint32_t row = 0; row < n; ++row)
+        {
+            if (!masks[row].matches(required, excluded))
+                continue;
+
+            const auto &p = positions[row];
+            const glm::vec4 world(p.x, p.y, p.z, 1.0f);
+            const glm::vec4 clip = vp * world;
+            if (clip.w <= 1e-6f)
+                continue;
+
+            const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+            if (ndc.x < -1.0f || ndc.x > 1.0f || ndc.y < -1.0f || ndc.y > 1.0f)
+                continue;
+
+            const float sx = (ndc.x * 0.5f + 0.5f) * width;
+            // Camera projection already flips Y for Vulkan, so NDC Y is in the same "down is +" sense as window pixels.
+            const float sy = (ndc.y * 0.5f + 0.5f) * height;
+
+            const float dx = sx - mouseX;
+            const float dy = sy - mouseY;
+            const float d2 = dx * dx + dy * dy;
+
+            const glm::vec3 camPos = m_camera.GetPosition();
+            const glm::vec3 worldPos(p.x, p.y, p.z);
+            const float camD2 = glm::dot(worldPos - camPos, worldPos - camPos);
+
+            if (d2 < bestD2 || (std::abs(d2 - bestD2) < 1e-4f && camD2 < bestCamD2))
+            {
+                bestD2 = d2;
+                bestCamD2 = camD2;
+                bestStore = &store;
+                bestRow = row;
+            }
+        }
+    }
+
+    if (!bestStore)
+        return;
+
+    // Apply selection and start animation.
+    bestStore->rowMasks()[bestRow].set(selectedId);
+    auto &anim = bestStore->renderAnimations()[bestRow];
+    anim.playing = true;
+    anim.timeSec = 0.0f;
 }
 
 void MySampleApp::ApplyRTSCamera(float aspect)
@@ -266,7 +382,7 @@ void MySampleApp::OnEvent(const std::string &name)
     std::string evt;
     iss >> evt;
 
-    if (evt == "MouseButtonRightDown")
+    if (evt == "MouseButtonLeftDown")
     {
         m_isPanning = true;
         m_panJustStarted = true;
@@ -277,10 +393,16 @@ void MySampleApp::OnEvent(const std::string &name)
         return;
     }
 
-    if (evt == "MouseButtonRightUp")
+    if (evt == "MouseButtonLeftUp")
     {
         m_isPanning = false;
         m_panJustStarted = false;
+        return;
+    }
+
+    if (evt == "MouseButtonRightDown")
+    {
+        PickAndSelectEntityAtCursor();
         return;
     }
 
