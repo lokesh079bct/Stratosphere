@@ -228,6 +228,21 @@ namespace Engine
         m_instanceWorlds.assign(instanceWorlds, instanceWorlds + count);
     }
 
+    void SModelRenderPassModule::setNodePalette(const glm::mat4 *nodeGlobals, uint32_t instanceCount, uint32_t nodeCount)
+    {
+        m_nodePalette.clear();
+        m_paletteInstanceCount = 0;
+        m_paletteNodeCount = 0;
+
+        if (!nodeGlobals || instanceCount == 0 || nodeCount == 0)
+            return;
+
+        m_paletteInstanceCount = instanceCount;
+        m_paletteNodeCount = nodeCount;
+        const size_t total = static_cast<size_t>(instanceCount) * static_cast<size_t>(nodeCount);
+        m_nodePalette.assign(nodeGlobals, nodeGlobals + total);
+    }
+
     bool SModelRenderPassModule::refreshModelMatrix()
     {
         if (!m_assets || !m_model.isValid())
@@ -396,26 +411,35 @@ namespace Engine
         camBinding.descriptorCount = 1;
         camBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
+        VkDescriptorSetLayoutBinding paletteBinding{};
+        paletteBinding.binding = 1;
+        paletteBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        paletteBinding.descriptorCount = 1;
+        paletteBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
         VkDescriptorSetLayoutCreateInfo dsl{};
         dsl.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        dsl.bindingCount = 1;
-        dsl.pBindings = &camBinding;
+        VkDescriptorSetLayoutBinding bindings[2] = {camBinding, paletteBinding};
+        dsl.bindingCount = 2;
+        dsl.pBindings = bindings;
 
         if (vkCreateDescriptorSetLayout(ctx.GetDevice(), &dsl, nullptr, &m_cameraSetLayout) != VK_SUCCESS)
         {
             return false;
         }
 
-        // Pool: one uniform buffer descriptor per frame
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSize.descriptorCount = static_cast<uint32_t>(frameCount);
+        // Pool: one uniform buffer descriptor + one storage buffer descriptor per frame
+        VkDescriptorPoolSize poolSizes[2]{};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount);
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSizes[1].descriptorCount = static_cast<uint32_t>(frameCount);
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.maxSets = static_cast<uint32_t>(frameCount);
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.poolSizeCount = 2;
+        poolInfo.pPoolSizes = poolSizes;
 
         if (vkCreateDescriptorPool(ctx.GetDevice(), &poolInfo, nullptr, &m_cameraPool) != VK_SUCCESS)
         {
@@ -483,21 +507,67 @@ namespace Engine
 
             vkBindBufferMemory(ctx.GetDevice(), cf.buffer, cf.memory, 0);
 
+            // Palette SSBO (host-visible, coherent, persistently mapped)
+            constexpr uint32_t kDefaultPaletteCapacityMatrices = 1024;
+            cf.paletteCapacityMatrices = kDefaultPaletteCapacityMatrices;
+
+            VkBufferCreateInfo pbinfo{};
+            pbinfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            pbinfo.size = static_cast<VkDeviceSize>(cf.paletteCapacityMatrices) * sizeof(glm::mat4);
+            pbinfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            pbinfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+            if (vkCreateBuffer(ctx.GetDevice(), &pbinfo, nullptr, &cf.paletteBuffer) != VK_SUCCESS)
+                return false;
+
+            VkMemoryRequirements pmemReq{};
+            vkGetBufferMemoryRequirements(ctx.GetDevice(), cf.paletteBuffer, &pmemReq);
+
+            VkMemoryAllocateInfo pmai{};
+            pmai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            pmai.allocationSize = pmemReq.size;
+            uint32_t pmemType = 0;
+            if (!findMemoryType(pmemReq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, pmemType))
+                return false;
+            pmai.memoryTypeIndex = pmemType;
+
+            if (vkAllocateMemory(ctx.GetDevice(), &pmai, nullptr, &cf.paletteMemory) != VK_SUCCESS)
+                return false;
+
+            vkBindBufferMemory(ctx.GetDevice(), cf.paletteBuffer, cf.paletteMemory, 0);
+
+            cf.paletteMapped = nullptr;
+            if (vkMapMemory(ctx.GetDevice(), cf.paletteMemory, 0, VK_WHOLE_SIZE, 0, &cf.paletteMapped) != VK_SUCCESS)
+                return false;
+
             VkDescriptorBufferInfo dbi{};
             dbi.buffer = cf.buffer;
             dbi.offset = 0;
             dbi.range = bufSize;
 
-            VkWriteDescriptorSet write{};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = cf.set;
-            write.dstBinding = 0;
-            write.dstArrayElement = 0;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            write.descriptorCount = 1;
-            write.pBufferInfo = &dbi;
+            VkDescriptorBufferInfo pbi{};
+            pbi.buffer = cf.paletteBuffer;
+            pbi.offset = 0;
+            pbi.range = static_cast<VkDeviceSize>(cf.paletteCapacityMatrices) * sizeof(glm::mat4);
 
-            vkUpdateDescriptorSets(ctx.GetDevice(), 1, &write, 0, nullptr);
+            VkWriteDescriptorSet writes[2]{};
+            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet = cf.set;
+            writes[0].dstBinding = 0;
+            writes[0].dstArrayElement = 0;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[0].descriptorCount = 1;
+            writes[0].pBufferInfo = &dbi;
+
+            writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[1].dstSet = cf.set;
+            writes[1].dstBinding = 1;
+            writes[1].dstArrayElement = 0;
+            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[1].descriptorCount = 1;
+            writes[1].pBufferInfo = &pbi;
+
+            vkUpdateDescriptorSets(ctx.GetDevice(), 2, writes, 0, nullptr);
         }
 
         return true;
@@ -507,6 +577,24 @@ namespace Engine
     {
         for (auto &cf : m_cameraFrames)
         {
+            if (cf.paletteMapped && cf.paletteMemory != VK_NULL_HANDLE)
+            {
+                vkUnmapMemory(m_device, cf.paletteMemory);
+                cf.paletteMapped = nullptr;
+            }
+
+            if (cf.paletteBuffer != VK_NULL_HANDLE)
+            {
+                vkDestroyBuffer(m_device, cf.paletteBuffer, nullptr);
+                cf.paletteBuffer = VK_NULL_HANDLE;
+            }
+            if (cf.paletteMemory != VK_NULL_HANDLE)
+            {
+                vkFreeMemory(m_device, cf.paletteMemory, nullptr);
+                cf.paletteMemory = VK_NULL_HANDLE;
+            }
+            cf.paletteCapacityMatrices = 0;
+
             if (cf.buffer != VK_NULL_HANDLE)
             {
                 vkDestroyBuffer(m_device, cf.buffer, nullptr);
@@ -531,6 +619,99 @@ namespace Engine
             vkDestroyDescriptorSetLayout(m_device, m_cameraSetLayout, nullptr);
             m_cameraSetLayout = VK_NULL_HANDLE;
         }
+    }
+
+    bool SModelRenderPassModule::ensurePaletteCapacity(CameraFrame &frame, uint32_t neededMatrices)
+    {
+        if (neededMatrices <= frame.paletteCapacityMatrices)
+            return true;
+        if (m_device == VK_NULL_HANDLE || m_physicalDevice == VK_NULL_HANDLE)
+            return false;
+        if (frame.set == VK_NULL_HANDLE)
+            return false;
+
+        uint32_t newCap = std::max<uint32_t>(1u, frame.paletteCapacityMatrices);
+        while (newCap < neededMatrices)
+            newCap *= 2u;
+
+        if (frame.paletteMapped && frame.paletteMemory != VK_NULL_HANDLE)
+        {
+            vkUnmapMemory(m_device, frame.paletteMemory);
+            frame.paletteMapped = nullptr;
+        }
+        if (frame.paletteBuffer != VK_NULL_HANDLE)
+        {
+            vkDestroyBuffer(m_device, frame.paletteBuffer, nullptr);
+            frame.paletteBuffer = VK_NULL_HANDLE;
+        }
+        if (frame.paletteMemory != VK_NULL_HANDLE)
+        {
+            vkFreeMemory(m_device, frame.paletteMemory, nullptr);
+            frame.paletteMemory = VK_NULL_HANDLE;
+        }
+
+        auto findMemoryType = [&](uint32_t typeFilter, VkMemoryPropertyFlags properties, uint32_t &typeIndex) -> bool
+        {
+            VkPhysicalDeviceMemoryProperties memProps{};
+            vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProps);
+            for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i)
+            {
+                if ((typeFilter & (1u << i)) && (memProps.memoryTypes[i].propertyFlags & properties) == properties)
+                {
+                    typeIndex = i;
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        VkBufferCreateInfo binfo{};
+        binfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        binfo.size = static_cast<VkDeviceSize>(newCap) * sizeof(glm::mat4);
+        binfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        binfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(m_device, &binfo, nullptr, &frame.paletteBuffer) != VK_SUCCESS)
+            return false;
+
+        VkMemoryRequirements memReq{};
+        vkGetBufferMemoryRequirements(m_device, frame.paletteBuffer, &memReq);
+
+        VkMemoryAllocateInfo mai{};
+        mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mai.allocationSize = memReq.size;
+        uint32_t memType = 0;
+        if (!findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, memType))
+            return false;
+        mai.memoryTypeIndex = memType;
+
+        if (vkAllocateMemory(m_device, &mai, nullptr, &frame.paletteMemory) != VK_SUCCESS)
+            return false;
+
+        vkBindBufferMemory(m_device, frame.paletteBuffer, frame.paletteMemory, 0);
+
+        frame.paletteMapped = nullptr;
+        if (vkMapMemory(m_device, frame.paletteMemory, 0, VK_WHOLE_SIZE, 0, &frame.paletteMapped) != VK_SUCCESS)
+            return false;
+
+        frame.paletteCapacityMatrices = newCap;
+
+        VkDescriptorBufferInfo pbi{};
+        pbi.buffer = frame.paletteBuffer;
+        pbi.offset = 0;
+        pbi.range = static_cast<VkDeviceSize>(frame.paletteCapacityMatrices) * sizeof(glm::mat4);
+
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = frame.set;
+        write.dstBinding = 1;
+        write.dstArrayElement = 0;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        write.descriptorCount = 1;
+        write.pBufferInfo = &pbi;
+
+        vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
+        return true;
     }
 
     bool SModelRenderPassModule::createInstanceResources(VulkanContext &ctx, size_t frameCount)
@@ -935,6 +1116,41 @@ namespace Engine
             }
         }
 
+        // Update node palette buffer for this frame (SSBO in set=0 binding=1).
+        const uint32_t nodeCount = model->nodes.empty() ? 1u : static_cast<uint32_t>(model->nodes.size());
+        const uint32_t neededMatrices = instanceCount * nodeCount;
+        if (camFrame && camFrame->paletteMapped)
+        {
+            if (!ensurePaletteCapacity(*camFrame, neededMatrices))
+                return;
+
+            const size_t expected = static_cast<size_t>(neededMatrices);
+
+            // Prefer the explicitly provided palette; otherwise fall back to the model's current node globals.
+            if (m_nodePalette.size() == expected)
+            {
+                std::memcpy(camFrame->paletteMapped, m_nodePalette.data(), sizeof(glm::mat4) * expected);
+            }
+            else
+            {
+                // Build a minimal fallback palette: replicate current per-node globals for each instance.
+                std::vector<glm::mat4> fallback;
+                fallback.resize(expected);
+                const uint32_t modelNodeCount = static_cast<uint32_t>(model->nodes.size());
+                for (uint32_t inst = 0; inst < instanceCount; ++inst)
+                {
+                    for (uint32_t ni = 0; ni < nodeCount; ++ni)
+                    {
+                        glm::mat4 g = glm::mat4(1.0f);
+                        if (ni < modelNodeCount)
+                            g = model->nodes[ni].globalMatrix;
+                        fallback[static_cast<size_t>(inst) * nodeCount + ni] = g;
+                    }
+                }
+                std::memcpy(camFrame->paletteMapped, fallback.data(), sizeof(glm::mat4) * expected);
+            }
+        }
+
         // Pass ordering like glTF: 0=OPAQUE,1=MASK,2=BLEND
         for (uint32_t pass = 0; pass < 3; ++pass)
         {
@@ -961,11 +1177,11 @@ namespace Engine
 
             if (!model->nodes.empty())
             {
-                // Draw by nodes: push node world matrix per node, then its primitives
+                // Draw by nodes: push base model matrix + node index; vertex shader fetches node matrix from palette
                 const glm::mat4 baseM = glm::make_mat4(m_pc.model);
-                for (const auto &node : model->nodes)
+                for (uint32_t nodeIndex = 0; nodeIndex < static_cast<uint32_t>(model->nodes.size()); ++nodeIndex)
                 {
-                    glm::mat4 nodeM = baseM * node.globalMatrix;
+                    const auto &node = model->nodes[nodeIndex];
 
                     for (uint32_t k = 0; k < node.primitiveCount; ++k)
                     {
@@ -988,12 +1204,14 @@ namespace Engine
                         }
 
                         PushConstantsModel pc{};
-                        std::memcpy(pc.model, glm::value_ptr(nodeM), sizeof(pc.model));
+                        std::memcpy(pc.model, glm::value_ptr(baseM), sizeof(pc.model));
                         std::memcpy(pc.baseColorFactor, mat->baseColorFactor, sizeof(pc.baseColorFactor));
                         pc.materialParams[0] = mat->alphaCutoff;
                         pc.materialParams[1] = static_cast<float>(mat->alphaMode);
                         pc.materialParams[2] = 0.0f;
                         pc.materialParams[3] = 0.0f;
+                        pc.nodeIndex = nodeIndex;
+                        pc.nodeCount = static_cast<uint32_t>(model->nodes.size());
                         vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstantsModel), &pc);
 
                         VkBuffer vb = mesh->getVertexBuffer();
@@ -1036,6 +1254,8 @@ namespace Engine
                     pc.materialParams[1] = static_cast<float>(mat->alphaMode);
                     pc.materialParams[2] = 0.0f;
                     pc.materialParams[3] = 0.0f;
+                    pc.nodeIndex = 0;
+                    pc.nodeCount = 1;
                     vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstantsModel), &pc);
 
                     VkBuffer vb = mesh->getVertexBuffer();

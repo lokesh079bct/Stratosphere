@@ -21,11 +21,18 @@ layout(set = 0, binding = 0) uniform CameraUBO {
     mat4 proj;
 } cam;
 
+// Flattened node globals: [instance][node]
+layout(set = 0, binding = 1, std430) readonly buffer NodePalette
+{
+    mat4 nodeGlobals[];
+} palette;
+
 layout(push_constant) uniform PushConstants
 {
     mat4 model;
     vec4 baseColorFactor;
     vec4 materialParams;
+    uvec4 nodeInfo; // x=nodeIndex, y=nodeCount
 } pc;
 
 layout(location = 0) out vec3 vNormal;
@@ -34,7 +41,11 @@ layout(location = 1) out vec2 vUV0;
 void main()
 {
     mat4 instanceWorld = mat4(inInstanceCol0, inInstanceCol1, inInstanceCol2, inInstanceCol3);
-    mat4 M = instanceWorld * pc.model;
+    uint instanceIndex = uint(gl_InstanceIndex);
+    uint nodeIndex = pc.nodeInfo.x;
+    uint nodeCount = max(pc.nodeInfo.y, 1u);
+    mat4 nodeM = palette.nodeGlobals[instanceIndex * nodeCount + nodeIndex];
+    mat4 M = instanceWorld * pc.model * nodeM;
 
     vec4 worldPos = M * vec4(inPosition, 1.0);
     mat3 normalMat = mat3(transpose(inverse(M)));

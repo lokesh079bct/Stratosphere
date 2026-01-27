@@ -38,6 +38,10 @@ namespace Engine
         // If not called (or count==0), the module defaults to drawing 1 instance at identity.
         void setInstances(const glm::mat4 *instanceWorlds, uint32_t count);
 
+        // Per-instance node global matrices, flattened as [instance][node].
+        // Must be called when using per-entity animation (palette indexed by gl_InstanceIndex).
+        void setNodePalette(const glm::mat4 *nodeGlobals, uint32_t instanceCount, uint32_t nodeCount);
+
         // Column-major 4x4 matrix (16 floats). Defaults to identity.
         void setModelMatrix(const float *m16);
 
@@ -60,7 +64,16 @@ namespace Engine
             float model[16];
             float baseColorFactor[4];
             float materialParams[4]; // x=alphaCutoff, y=alphaMode, z/w unused
+
+            // Which node is being drawn; vertex shader fetches from palette[gl_InstanceIndex][nodeIndex]
+            uint32_t nodeIndex = 0;
+            uint32_t nodeCount = 0;
+            uint32_t _pad0 = 0;
+            uint32_t _pad1 = 0;
         };
+
+        static_assert(sizeof(PushConstantsModel) == 112, "PushConstantsModel must match smodel.vert push constant block size");
+        static_assert(offsetof(PushConstantsModel, nodeIndex) == 96, "PushConstantsModel::nodeIndex offset must match GLSL");
 
         struct CameraUBO
         {
@@ -73,6 +86,11 @@ namespace Engine
             VkBuffer buffer = VK_NULL_HANDLE;
             VkDeviceMemory memory = VK_NULL_HANDLE;
             VkDescriptorSet set = VK_NULL_HANDLE;
+
+            VkBuffer paletteBuffer = VK_NULL_HANDLE;
+            VkDeviceMemory paletteMemory = VK_NULL_HANDLE;
+            void *paletteMapped = nullptr;
+            uint32_t paletteCapacityMatrices = 0;
         };
 
         void destroyResources();
@@ -80,6 +98,7 @@ namespace Engine
         bool refreshModelMatrix();
         bool createCameraResources(VulkanContext &ctx, size_t frameCount);
         void destroyCameraResources();
+        bool ensurePaletteCapacity(CameraFrame &frame, uint32_t neededMatrices);
 
         bool createInstanceResources(VulkanContext &ctx, size_t frameCount);
         void destroyInstanceResources();
@@ -117,6 +136,11 @@ namespace Engine
 
         std::vector<InstanceFrame> m_instanceFrames;
         std::vector<glm::mat4> m_instanceWorlds;
+
+        // Flattened node globals uploaded to a per-frame SSBO
+        std::vector<glm::mat4> m_nodePalette;
+        uint32_t m_paletteInstanceCount = 0;
+        uint32_t m_paletteNodeCount = 0;
 
         TextureAsset m_fallbackWhiteTexture;
 

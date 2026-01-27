@@ -14,6 +14,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstddef>
 #include <vector>
 
 namespace Engine
@@ -54,13 +55,24 @@ namespace Engine
             glm::mat4 model{1.0f};
             glm::vec4 baseColorFactor{1.0f};
             glm::vec4 materialParams{0.0f}; // x=alphaCutoff, y=alphaMode
+
+            // Matches smodel.vert push constants (x=nodeIndex, y=nodeCount)
+            glm::uvec4 nodeInfo{0u, 1u, 0u, 0u};
         };
+
+        static_assert(sizeof(PushConstants) == 112, "GroundPlane PushConstants must match smodel.vert");
+        static_assert(offsetof(PushConstants, nodeInfo) == 96, "GroundPlane PushConstants::nodeInfo offset must match smodel.vert");
 
         struct CameraFrame
         {
             VkDescriptorSet set = VK_NULL_HANDLE;
             VkBuffer buffer = VK_NULL_HANDLE;
             VkDeviceMemory memory = VK_NULL_HANDLE;
+
+            VkBuffer paletteBuffer = VK_NULL_HANDLE;
+            VkDeviceMemory paletteMemory = VK_NULL_HANDLE;
+            void *paletteMapped = nullptr;
+            uint32_t paletteCapacityMatrices = 0;
         };
 
         struct InstanceFrame

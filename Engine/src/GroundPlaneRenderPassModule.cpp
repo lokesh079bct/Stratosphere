@@ -186,23 +186,32 @@ namespace Engine
         camBinding.descriptorCount = 1;
         camBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
+        VkDescriptorSetLayoutBinding paletteBinding{};
+        paletteBinding.binding = 1;
+        paletteBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        paletteBinding.descriptorCount = 1;
+        paletteBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
         VkDescriptorSetLayoutCreateInfo dsl{};
         dsl.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        dsl.bindingCount = 1;
-        dsl.pBindings = &camBinding;
+        VkDescriptorSetLayoutBinding bindings[2] = {camBinding, paletteBinding};
+        dsl.bindingCount = 2;
+        dsl.pBindings = bindings;
 
         if (vkCreateDescriptorSetLayout(ctx.GetDevice(), &dsl, nullptr, &m_cameraSetLayout) != VK_SUCCESS)
             return false;
 
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSize.descriptorCount = static_cast<uint32_t>(frameCount);
+        VkDescriptorPoolSize poolSizes[2]{};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount);
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSizes[1].descriptorCount = static_cast<uint32_t>(frameCount);
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.maxSets = static_cast<uint32_t>(frameCount);
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.poolSizeCount = 2;
+        poolInfo.pPoolSizes = poolSizes;
 
         if (vkCreateDescriptorPool(ctx.GetDevice(), &poolInfo, nullptr, &m_cameraPool) != VK_SUCCESS)
             return false;
@@ -251,20 +260,71 @@ namespace Engine
 
             vkBindBufferMemory(ctx.GetDevice(), cf.buffer, cf.memory, 0);
 
+            // Palette SSBO: allocate a tiny buffer (identity matrix) to satisfy smodel.vert.
+            cf.paletteCapacityMatrices = 4;
+
+            VkBufferCreateInfo pbinfo{};
+            pbinfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            pbinfo.size = static_cast<VkDeviceSize>(cf.paletteCapacityMatrices) * sizeof(glm::mat4);
+            pbinfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            pbinfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+            if (vkCreateBuffer(ctx.GetDevice(), &pbinfo, nullptr, &cf.paletteBuffer) != VK_SUCCESS)
+                return false;
+
+            VkMemoryRequirements pmemReq{};
+            vkGetBufferMemoryRequirements(ctx.GetDevice(), cf.paletteBuffer, &pmemReq);
+
+            VkMemoryAllocateInfo pmai{};
+            pmai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            pmai.allocationSize = pmemReq.size;
+            uint32_t pmemType = 0;
+            if (!findMemoryType(ctx.GetPhysicalDevice(), pmemReq.memoryTypeBits,
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, pmemType))
+                return false;
+            pmai.memoryTypeIndex = pmemType;
+
+            if (vkAllocateMemory(ctx.GetDevice(), &pmai, nullptr, &cf.paletteMemory) != VK_SUCCESS)
+                return false;
+
+            vkBindBufferMemory(ctx.GetDevice(), cf.paletteBuffer, cf.paletteMemory, 0);
+
+            cf.paletteMapped = nullptr;
+            if (vkMapMemory(ctx.GetDevice(), cf.paletteMemory, 0, VK_WHOLE_SIZE, 0, &cf.paletteMapped) != VK_SUCCESS)
+                return false;
+
+            if (cf.paletteMapped)
+            {
+                const glm::mat4 I(1.0f);
+                std::memcpy(cf.paletteMapped, &I, sizeof(glm::mat4));
+            }
+
             VkDescriptorBufferInfo dbi{};
             dbi.buffer = cf.buffer;
             dbi.offset = 0;
             dbi.range = bufSize;
 
-            VkWriteDescriptorSet write{};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = cf.set;
-            write.dstBinding = 0;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            write.descriptorCount = 1;
-            write.pBufferInfo = &dbi;
+            VkDescriptorBufferInfo pbi{};
+            pbi.buffer = cf.paletteBuffer;
+            pbi.offset = 0;
+            pbi.range = static_cast<VkDeviceSize>(cf.paletteCapacityMatrices) * sizeof(glm::mat4);
 
-            vkUpdateDescriptorSets(ctx.GetDevice(), 1, &write, 0, nullptr);
+            VkWriteDescriptorSet writes[2]{};
+            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet = cf.set;
+            writes[0].dstBinding = 0;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[0].descriptorCount = 1;
+            writes[0].pBufferInfo = &dbi;
+
+            writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[1].dstSet = cf.set;
+            writes[1].dstBinding = 1;
+            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[1].descriptorCount = 1;
+            writes[1].pBufferInfo = &pbi;
+
+            vkUpdateDescriptorSets(ctx.GetDevice(), 2, writes, 0, nullptr);
         }
 
         return true;
@@ -274,6 +334,23 @@ namespace Engine
     {
         for (auto &cf : m_cameraFrames)
         {
+            if (cf.paletteMapped && cf.paletteMemory != VK_NULL_HANDLE)
+            {
+                vkUnmapMemory(m_device, cf.paletteMemory);
+                cf.paletteMapped = nullptr;
+            }
+            if (cf.paletteBuffer != VK_NULL_HANDLE)
+            {
+                vkDestroyBuffer(m_device, cf.paletteBuffer, nullptr);
+                cf.paletteBuffer = VK_NULL_HANDLE;
+            }
+            if (cf.paletteMemory != VK_NULL_HANDLE)
+            {
+                vkFreeMemory(m_device, cf.paletteMemory, nullptr);
+                cf.paletteMemory = VK_NULL_HANDLE;
+            }
+            cf.paletteCapacityMatrices = 0;
+
             if (cf.buffer != VK_NULL_HANDLE)
             {
                 vkDestroyBuffer(m_device, cf.buffer, nullptr);
@@ -599,6 +676,7 @@ namespace Engine
         m_pc.model = glm::mat4(1.0f);
         m_pc.baseColorFactor = glm::vec4(1.0f);
         m_pc.materialParams = glm::vec4(0.5f, 0.0f, 0.0f, 0.0f); // alphaCutoff=0.5, alphaMode=Opaque
+        m_pc.nodeInfo = glm::uvec4(0u, 1u, 0u, 0u);
 
         m_pipeline.bind(cmd);
 
