@@ -336,6 +336,76 @@ static void WriteVector(std::ofstream &out, const std::vector<T> &v)
         out.write(reinterpret_cast<const char *>(v.data()), sizeof(T) * v.size());
 }
 
+// ------------------------------------------------------------
+// Anim helpers
+// ------------------------------------------------------------
+static inline float TicksToSeconds(double ticks, double ticksPerSecond)
+{
+    // Assimp sometimes sets ticksPerSecond = 0
+    double tps = (ticksPerSecond != 0.0) ? ticksPerSecond : 1.0;
+    return (float)(ticks / tps);
+}
+
+static uint16_t AddVec3Sampler(const aiVectorKey *keys,
+                               uint32_t keyCount,
+                               double tps,
+                               sm::SModelAnimInterpolation interp,
+                               std::vector<float> &animTimes,
+                               std::vector<float> &animValues,
+                               std::vector<sm::SModelAnimationSamplerRecord> &animSamplers)
+{
+    sm::SModelAnimationSamplerRecord s{};
+    s.firstTime = (uint32_t)animTimes.size();
+    s.timeCount = keyCount;
+    s.firstValue = (uint32_t)animValues.size();
+    s.valueCount = keyCount * 3;
+    s.interpolation = (uint8_t)interp;
+    s.valueType = (uint8_t)sm::SModelAnimValueType::Vec3;
+
+    for (uint32_t i = 0; i < keyCount; i++)
+    {
+        animTimes.push_back(TicksToSeconds(keys[i].mTime, tps));
+        animValues.push_back((float)keys[i].mValue.x);
+        animValues.push_back((float)keys[i].mValue.y);
+        animValues.push_back((float)keys[i].mValue.z);
+    }
+
+    uint32_t samplerIndex = (uint32_t)animSamplers.size();
+    animSamplers.push_back(s);
+    return (uint16_t)samplerIndex;
+}
+
+static uint16_t AddQuatSampler(const aiQuatKey *keys,
+                               uint32_t keyCount,
+                               double tps,
+                               sm::SModelAnimInterpolation interp,
+                               std::vector<float> &animTimes,
+                               std::vector<float> &animValues,
+                               std::vector<sm::SModelAnimationSamplerRecord> &animSamplers)
+{
+    sm::SModelAnimationSamplerRecord s{};
+    s.firstTime = (uint32_t)animTimes.size();
+    s.timeCount = keyCount;
+    s.firstValue = (uint32_t)animValues.size();
+    s.valueCount = keyCount * 4;
+    s.interpolation = (uint8_t)interp;
+    s.valueType = (uint8_t)sm::SModelAnimValueType::Quat;
+
+    for (uint32_t i = 0; i < keyCount; i++)
+    {
+        animTimes.push_back(TicksToSeconds(keys[i].mTime, tps));
+        // Store quat as XYZW (consistent with loader validation expectations)
+        animValues.push_back((float)keys[i].mValue.x);
+        animValues.push_back((float)keys[i].mValue.y);
+        animValues.push_back((float)keys[i].mValue.z);
+        animValues.push_back((float)keys[i].mValue.w);
+    }
+
+    uint32_t samplerIndex = (uint32_t)animSamplers.size();
+    animSamplers.push_back(s);
+    return (uint16_t)samplerIndex;
+}
+
 static void WriteBytes(std::ofstream &out, const std::vector<uint8_t> &b)
 {
     if (!b.empty())
@@ -406,6 +476,13 @@ int main(int argc, char **argv)
     std::vector<sm::SModelNodeRecord> nodeRecords;
     std::vector<uint32_t> nodePrimitiveIndices;
     std::vector<uint32_t> nodeChildIndices;
+
+    // Animations (V3)
+    std::vector<sm::SModelAnimationClipRecord> animClips;
+    std::vector<sm::SModelAnimationChannelRecord> animChannels;
+    std::vector<sm::SModelAnimationSamplerRecord> animSamplers;
+    std::vector<float> animTimes;  // seconds
+    std::vector<float> animValues; // packed floats (vec3/quats)
 
     // ------------------------------------------------------------
     // Texture dedup map
@@ -780,6 +857,9 @@ int main(int argc, char **argv)
     // Build node graph (DFS)
     const uint32_t U32_MAX = ~0u;
 
+    // Assimp animation channels target nodes by name
+    std::unordered_map<std::string, uint32_t> nodeNameToIndex;
+
     auto ConvertAiToColumnMajor = [](const aiMatrix4x4 &m, float out[16])
     {
         // aiMatrix4x4 is row-major; write into column-major float array explicitly.
@@ -812,6 +892,9 @@ int main(int argc, char **argv)
 
         const uint32_t thisIndex = static_cast<uint32_t>(nodeRecords.size());
         nodeRecords.push_back(sm::SModelNodeRecord{}); // reserve slot; filled at end
+
+        if (n->mName.length > 0)
+            nodeNameToIndex[n->mName.C_Str()] = thisIndex;
 
         sm::SModelNodeRecord rec{};
         rec.nameStrOffset = strings.add(n->mName.length > 0 ? std::string(n->mName.C_Str()) : std::string());
@@ -864,6 +947,120 @@ int main(int argc, char **argv)
 
     (void)EmitNode(scene->mRootNode, U32_MAX);
 
+    // ------------------------------------------------------------
+    // Build animation tables (node TRS only)
+    // ------------------------------------------------------------
+    if (scene->mNumAnimations > 0)
+    {
+        for (uint32_t a = 0; a < scene->mNumAnimations; a++)
+        {
+            const aiAnimation *anim = scene->mAnimations[a];
+            if (!anim)
+                continue;
+
+            const double tps = (anim->mTicksPerSecond != 0.0) ? anim->mTicksPerSecond : 1.0;
+
+            sm::SModelAnimationClipRecord clip{};
+
+            std::string clipName;
+            if (anim->mName.length > 0)
+                clipName = anim->mName.C_Str();
+            else
+                clipName = std::string("Anim_") + std::to_string(a);
+
+            clip.nameOffset = strings.add(clipName);
+            clip.durationSec = (float)(anim->mDuration / tps);
+            clip.firstChannel = (uint32_t)animChannels.size();
+            clip.channelCount = 0;
+
+            // For each node channel
+            for (uint32_t c = 0; c < anim->mNumChannels; c++)
+            {
+                const aiNodeAnim *ch = anim->mChannels[c];
+                if (!ch)
+                    continue;
+
+                auto it = nodeNameToIndex.find(ch->mNodeName.C_Str());
+                if (it == nodeNameToIndex.end())
+                {
+                    // Node not found: exporters sometimes include channels for nodes not present
+                    continue;
+                }
+
+                const uint32_t targetNode = it->second;
+                const auto interp = sm::SModelAnimInterpolation::Linear;
+
+                // Translation
+                if (ch->mNumPositionKeys > 0)
+                {
+                    const uint16_t samplerIndex = AddVec3Sampler(ch->mPositionKeys,
+                                                                 (uint32_t)ch->mNumPositionKeys,
+                                                                 tps,
+                                                                 interp,
+                                                                 animTimes,
+                                                                 animValues,
+                                                                 animSamplers);
+
+                    sm::SModelAnimationChannelRecord outCh{};
+                    outCh.targetNode = targetNode;
+                    outCh.path = (uint16_t)sm::SModelAnimPath::Translation;
+                    outCh.samplerIndex = samplerIndex;
+                    animChannels.push_back(outCh);
+                    clip.channelCount++;
+                }
+
+                // Rotation
+                if (ch->mNumRotationKeys > 0)
+                {
+                    const uint16_t samplerIndex = AddQuatSampler(ch->mRotationKeys,
+                                                                 (uint32_t)ch->mNumRotationKeys,
+                                                                 tps,
+                                                                 interp,
+                                                                 animTimes,
+                                                                 animValues,
+                                                                 animSamplers);
+
+                    sm::SModelAnimationChannelRecord outCh{};
+                    outCh.targetNode = targetNode;
+                    outCh.path = (uint16_t)sm::SModelAnimPath::Rotation;
+                    outCh.samplerIndex = samplerIndex;
+                    animChannels.push_back(outCh);
+                    clip.channelCount++;
+                }
+
+                // Scale
+                if (ch->mNumScalingKeys > 0)
+                {
+                    const uint16_t samplerIndex = AddVec3Sampler(ch->mScalingKeys,
+                                                                 (uint32_t)ch->mNumScalingKeys,
+                                                                 tps,
+                                                                 interp,
+                                                                 animTimes,
+                                                                 animValues,
+                                                                 animSamplers);
+
+                    sm::SModelAnimationChannelRecord outCh{};
+                    outCh.targetNode = targetNode;
+                    outCh.path = (uint16_t)sm::SModelAnimPath::Scale;
+                    outCh.samplerIndex = samplerIndex;
+                    animChannels.push_back(outCh);
+                    clip.channelCount++;
+                }
+            }
+
+            // Store only non-empty clips
+            if (clip.channelCount > 0)
+            {
+                animClips.push_back(clip);
+            }
+            else
+            {
+                // Rewind firstChannel to keep clip table consistent (no-op since clip not stored)
+                // Channels weren't added either, so nothing to fix.
+            }
+        }
+    }
+
     // Build header offsets
     // File layout:
     // Header
@@ -886,19 +1083,11 @@ int main(int argc, char **argv)
     header.nodeCount = static_cast<uint32_t>(nodeRecords.size());
     header.nodePrimitiveIndexCount = static_cast<uint32_t>(nodePrimitiveIndices.size());
     header.nodeChildIndicesCount = static_cast<uint32_t>(nodeChildIndices.size());
-
-    // Animations are not emitted yet in this iteration.
-    // Keeping these as 0 makes the loader treat the file as having no animations.
-    header.animClipsOffset = 0;
-    header.animClipsCount = 0;
-    header.animChannelsOffset = 0;
-    header.animChannelsCount = 0;
-    header.animSamplersOffset = 0;
-    header.animSamplersCount = 0;
-    header.animTimesOffset = 0;
-    header.animTimesCount = 0;
-    header.animValuesOffset = 0;
-    header.animValuesCount = 0;
+    header.animClipsCount = static_cast<uint32_t>(animClips.size());
+    header.animChannelsCount = static_cast<uint32_t>(animChannels.size());
+    header.animSamplersCount = static_cast<uint32_t>(animSamplers.size());
+    header.animTimesCount = static_cast<uint32_t>(animTimes.size());
+    header.animValuesCount = static_cast<uint32_t>(animValues.size());
 
     uint64_t cursor = sizeof(sm::SModelHeader);
 
@@ -925,6 +1114,22 @@ int main(int argc, char **argv)
     // Node child indices
     header.nodeChildIndicesOffset = static_cast<uint32_t>(cursor);
     cursor += uint64_t(nodeChildIndices.size()) * sizeof(uint32_t);
+
+    // Animations
+    header.animClipsOffset = static_cast<uint32_t>(cursor);
+    cursor += uint64_t(animClips.size()) * sizeof(sm::SModelAnimationClipRecord);
+
+    header.animChannelsOffset = static_cast<uint32_t>(cursor);
+    cursor += uint64_t(animChannels.size()) * sizeof(sm::SModelAnimationChannelRecord);
+
+    header.animSamplersOffset = static_cast<uint32_t>(cursor);
+    cursor += uint64_t(animSamplers.size()) * sizeof(sm::SModelAnimationSamplerRecord);
+
+    header.animTimesOffset = static_cast<uint32_t>(cursor);
+    cursor += uint64_t(animTimes.size()) * sizeof(float);
+
+    header.animValuesOffset = static_cast<uint32_t>(cursor);
+    cursor += uint64_t(animValues.size()) * sizeof(float);
 
     header.stringTableOffset = cursor;
     header.stringTableSize = static_cast<uint64_t>(strings.data.size());
@@ -956,6 +1161,11 @@ int main(int argc, char **argv)
     WriteVector(out, nodeRecords);
     WriteVector(out, nodePrimitiveIndices);
     WriteVector(out, nodeChildIndices);
+    WriteVector(out, animClips);
+    WriteVector(out, animChannels);
+    WriteVector(out, animSamplers);
+    WriteVector(out, animTimes);
+    WriteVector(out, animValues);
     WriteChars(out, strings.data);
     WriteBytes(out, blob.bytes);
 
@@ -968,6 +1178,11 @@ int main(int argc, char **argv)
     std::cout << "Textures   : " << header.textureCount << "\n";
     std::cout << "Nodes      : " << header.nodeCount << "\n";
     std::cout << "NodePrimIx : " << header.nodePrimitiveIndexCount << "\n";
+    std::cout << "AnimClips  : " << header.animClipsCount << "\n";
+    std::cout << "AnimChans  : " << header.animChannelsCount << "\n";
+    std::cout << "AnimSamplers: " << header.animSamplersCount << "\n";
+    std::cout << "AnimTimes  : " << header.animTimesCount << " floats\n";
+    std::cout << "AnimValues : " << header.animValuesCount << " floats\n";
     std::cout << "StringTable: " << header.stringTableSize << " bytes\n";
     std::cout << "Blob       : " << header.blobSize << " bytes\n";
     std::cout << "FileSize   : " << header.fileSizeBytes << " bytes\n";
