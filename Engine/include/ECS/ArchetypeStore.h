@@ -56,6 +56,8 @@ namespace Engine::ECS
                 m_avoidanceParams.emplace_back(AvoidanceParams{});
             if (hasRenderModel())
                 m_renderModels.emplace_back(RenderModel{});
+            if (hasRenderAnimation())
+                m_renderAnimations.emplace_back(RenderAnimation{});
 
             return row;
         }
@@ -94,6 +96,8 @@ namespace Engine::ECS
                 swapErase(m_avoidanceParams);
             if (hasRenderModel())
                 swapErase(m_renderModels);
+            if (hasRenderAnimation())
+                swapErase(m_renderAnimations);
         }
 
         // Apply typed defaults for a newly created row.
@@ -142,6 +146,10 @@ namespace Engine::ECS
                 {
                     m_renderModels[row] = std::get<RenderModel>(kv.second);
                 }
+                else if (std::holds_alternative<RenderAnimation>(kv.second) && hasRenderAnimation())
+                {
+                    m_renderAnimations[row] = std::get<RenderAnimation>(kv.second);
+                }
             }
         }
 
@@ -181,6 +189,9 @@ namespace Engine::ECS
         std::vector<RenderModel> &renderModels() { return m_renderModels; }
         const std::vector<RenderModel> &renderModels() const { return m_renderModels; }
 
+        std::vector<RenderAnimation> &renderAnimations() { return m_renderAnimations; }
+        const std::vector<RenderAnimation> &renderAnimations() const { return m_renderAnimations; }
+
         // Helpers
         bool hasPosition() const { return m_hasPosition; }
         bool hasVelocity() const { return m_hasVelocity; }
@@ -191,6 +202,7 @@ namespace Engine::ECS
         bool hasSeparation() const { return m_hasSeparation; }
         bool hasAvoidanceParams() const { return m_hasAvoidanceParams; }
         bool hasRenderModel() const { return m_hasRenderModel; }
+        bool hasRenderAnimation() const { return m_hasRenderAnimation; }
 
         // Resolve which known components are present in signature; enables arrays accordingly.
         void resolveKnownComponents(ComponentRegistry &registry)
@@ -203,7 +215,8 @@ namespace Engine::ECS
             const uint32_t radId = registry.ensureId("Radius");
             const uint32_t sepId = registry.ensureId("Separation");
             const uint32_t apId = registry.ensureId("AvoidanceParams");
-            const uint32_t rmId = registry.ensureId("RenderMesh");
+            const uint32_t rmId = registry.ensureId("RenderModel");
+            const uint32_t raId = registry.ensureId("RenderAnimation");
             m_hasPosition = m_signature.has(posId);
             m_hasVelocity = m_signature.has(velId);
             m_hasHealth = m_signature.has(heaId);
@@ -213,6 +226,7 @@ namespace Engine::ECS
             m_hasSeparation = m_signature.has(sepId);
             m_hasAvoidanceParams = m_signature.has(apId);
             m_hasRenderModel = m_signature.has(rmId);
+            m_hasRenderAnimation = m_signature.has(raId);
         }
 
     private:
@@ -230,6 +244,7 @@ namespace Engine::ECS
         std::vector<Separation> m_separations;
         std::vector<AvoidanceParams> m_avoidanceParams;
         std::vector<RenderModel> m_renderModels;
+        std::vector<RenderAnimation> m_renderAnimations;
 
         // Flags indicating which arrays are active.
         bool m_hasPosition = false;
@@ -241,6 +256,7 @@ namespace Engine::ECS
         bool m_hasSeparation = false;
         bool m_hasAvoidanceParams = false;
         bool m_hasRenderModel = false;
+        bool m_hasRenderAnimation = false;
     };
 
     class ArchetypeStoreManager

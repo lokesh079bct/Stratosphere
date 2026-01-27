@@ -1,7 +1,11 @@
 #include "assets/AssetManager.h"
 #include "utils/ImageUtils.h" // UploadContext
+
+// Needed for glm/gtx/* headers (matrix_decompose)
+#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
 
 #include <utility>
 #include <cstring>
@@ -13,6 +17,16 @@
 const float TARGET = 10.0f; // Target size of models after scaling
 namespace Engine
 {
+    static ModelAsset::NodeTRS DecomposeTRS(const glm::mat4 &m)
+    {
+        ModelAsset::NodeTRS out{};
+        glm::vec3 skew;
+        glm::vec4 perspective;
+        glm::decompose(m, out.s, out.r, out.t, skew, perspective);
+        out.r = glm::normalize(out.r);
+        return out;
+    }
+
     // ------------------------------------------------------------
     // Helpers: map smodel enum ints -> Vulkan settings
     // ------------------------------------------------------------
@@ -789,6 +803,52 @@ namespace Engine
                 model->fitScale = (maxExtent > epsilon) ? (target / maxExtent) : 1.0f;
             }
         }
+
+        // --------------------------
+        // V3: Copy animations into ModelAsset (node TRS only)
+        // --------------------------
+        if (view.animClipCount() > 0)
+        {
+            model->animClips.resize(view.animClipCount());
+            std::memcpy(model->animClips.data(), view.animClips, sizeof(smodel::SModelAnimationClipRecord) * view.animClipCount());
+        }
+        if (view.animChannelCount() > 0)
+        {
+            model->animChannels.resize(view.animChannelCount());
+            std::memcpy(model->animChannels.data(), view.animChannels, sizeof(smodel::SModelAnimationChannelRecord) * view.animChannelCount());
+        }
+        if (view.animSamplerCount() > 0)
+        {
+            model->animSamplers.resize(view.animSamplerCount());
+            std::memcpy(model->animSamplers.data(), view.animSamplers, sizeof(smodel::SModelAnimationSamplerRecord) * view.animSamplerCount());
+        }
+        if (view.animTimesCount() > 0)
+        {
+            model->animTimes.resize(view.animTimesCount());
+            std::memcpy(model->animTimes.data(), view.animTimes, sizeof(float) * view.animTimesCount());
+        }
+        if (view.animValuesCount() > 0)
+        {
+            model->animValues.resize(view.animValuesCount());
+            std::memcpy(model->animValues.data(), view.animValues, sizeof(float) * view.animValuesCount());
+        }
+
+        // --------------------------
+        // Initialize runtime animation TRS buffers from node local matrices
+        // --------------------------
+        model->restTRS.resize(model->nodes.size());
+        model->animatedTRS.resize(model->nodes.size());
+        for (size_t i = 0; i < model->nodes.size(); i++)
+        {
+            const glm::mat4 local = model->nodes[i].localMatrix;
+            model->restTRS[i] = DecomposeTRS(local);
+            model->animatedTRS[i] = model->restTRS[i];
+        }
+
+        model->animState.clipIndex = 0;
+        model->animState.timeSec = 0.0f;
+        model->animState.loop = true;
+        model->animState.playing = true;
 
         // Register model and cache it
         ModelHandle modelHandle = createModel_Internal(std::move(model), cookedModelPath, 1);

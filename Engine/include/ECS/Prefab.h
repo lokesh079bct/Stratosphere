@@ -146,6 +146,13 @@ namespace Engine::ECS
                         RenderModel rm{};
                         rm.handle = h;
                         p.defaults[rmId] = rm;
+
+                        // Also add per-entity animation state (defaults: clip 0, time 0, looping, playing)
+                        const uint32_t raId = registry.ensureId("RenderAnimation");
+                        p.signature.set(raId);
+
+                        RenderAnimation ra{};
+                        p.defaults[raId] = ra;
                     }
                     else
                     {

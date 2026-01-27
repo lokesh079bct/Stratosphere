@@ -97,8 +97,18 @@ namespace Engine::ECS
         ModelHandle handle;
     };
 
+    // Per-entity animation state (node TRS only; no skinning yet)
+    struct RenderAnimation
+    {
+        uint32_t clipIndex = 0;
+        float timeSec = 0.0f;
+        float speed = 1.0f;
+        bool loop = false;
+        bool playing = false;
+    };
+
     // Typed defaults per component ID (used by Prefabs/Stores).
-    using DefaultValue = std::variant<Position, Velocity, Health, MoveTarget, MoveSpeed, Radius, Separation, AvoidanceParams, RenderModel>;
+    using DefaultValue = std::variant<Position, Velocity, Health, MoveTarget, MoveSpeed, Radius, Separation, AvoidanceParams, RenderModel, RenderAnimation>;
     // -----------------------
     // Component Registry
     // -----------------------
